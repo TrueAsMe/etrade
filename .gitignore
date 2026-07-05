@@ -1,0 +1,27 @@
+# ── Secrets ──────────────────────────────────────────────────
+.env
+*.env
+!.env.example
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── Data & logs (large and/or sensitive) ─────────────────────
+data/
+logs/
+signal_alert/logs/
+*.log
+make_requirements.sh
+
+# ── Notebooks checkpoints ────────────────────────────────────
+.ipynb_checkpoints/
+.ipynb
+
+# ── macOS cruft ──────────────────────────────────────────────
+.DS_Store
+__MACOSX/

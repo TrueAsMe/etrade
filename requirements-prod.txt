@@ -1,0 +1,31 @@
+# requirements-prod.txt — CLOUD DEPLOY ONLY (the live signal/scheduler service)
+# ---------------------------------------------------------------------------
+# This is the minimal runtime the deployed scheduler + signal pipeline import.
+# It deliberately EXCLUDES the Jupyter/IPython/dev stack in the full freeze
+# (requirements.txt), which the cloud host never needs — smaller image,
+# faster builds, smaller attack surface.
+#
+# Keep requirements.txt as your full dev lock (Mac notebook environment).
+# Versions below are pinned to match your June 2026 freeze.
+# ---------------------------------------------------------------------------
+
+# ── Core runtime ──
+pandas==3.0.1
+numpy==2.4.3
+pytz==2026.1.post1
+python-dotenv==1.2.2
+requests==2.32.5          # used by alerts.py (Pushover) + general HTTP
+schedule==1.2.2           # scheduler.py loop
+
+# ── Live market data (KEEP ONLY THE FEED THE CLOUD SERVICE ACTUALLY CALLS) ──
+databento==0.80.0
+databento-dbn==0.61.0
+#yfinance==1.2.0           # if the cloud pulls bars via yfinance
+# massive==2.4.0            # if the cloud pulls bars via Massive.com (ex-Polygon)
+# alpaca-py==0.43.2       # uncomment only if Alpaca is the live feed
+
+# ── NOT included on purpose ──
+# matplotlib        → dashboard is a local/analysis tool, not needed on the host
+# ib-insync         → IBKR is the personal route (runs locally), not the cloud prop service
+# twilio / telnyx   → superseded by Pushover (requests); remove unless SMS is still used
+# jupyter* / ipython* / debugpy / jedi / nbconvert / ...  → dev-only notebook stack
