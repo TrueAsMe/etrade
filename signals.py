@@ -20,8 +20,8 @@ from datetime import datetime
 import pandas as pd
 import pytz
 
-_base = os.getenv("MYM_BASE", os.path.expanduser("~/prod/em_algo"))
-sys.path.insert(0, os.path.join(_base, "task"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
 
 try:                                    # package run: python -m etrade_stage.signals
     from alerts import send_alert
