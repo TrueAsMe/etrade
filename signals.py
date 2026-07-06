@@ -20,8 +20,10 @@ from datetime import datetime
 import pandas as pd
 import pytz
 
-_base = os.getenv("MYM_BASE", os.path.expanduser("~/prod/em_algo"))
-sys.path.insert(0, os.path.join(_base, "task"))
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config   # no try/except around this — let it fail loudly
+print("config imported OK from:", config.__file__)
 
 try:                                    # package run: python -m etrade_stage.signals
     from alerts import send_alert
@@ -39,10 +41,10 @@ def log(msg):
 
 # ── DATA LOADING (active: yfinance) ───────────
 def load_from_databento():
-    """Live MYM=F bars via yfinance (free, 15-min delay)."""
+    """Live MYM=F bars via Databento (free, 15-min delay)."""
     from data_feed import load_all_timeframes
     df_5m, df_15m, df_1h = load_all_timeframes()
-    log("Live data loaded from yfinance (15min delay)")
+    log("Live data loaded from Databento (15min delay)")
     return df_5m, df_15m, df_1h
 
 # ── CANDLE METRICS & SESSION (identical to strategy.py) ──
@@ -359,7 +361,7 @@ def run_signal_check():
     log("Running signal check (v7 strategy)...")
 
     try:
-        df_5m, df_15m, df_1h = load_from_yfinance()
+        df_5m, df_15m, df_1h = load_from_databento()
     except Exception as e:
         log(f"Data load failed: {e}")
         return
