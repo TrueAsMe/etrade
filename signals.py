@@ -39,10 +39,10 @@ def log(msg):
 
 # ── DATA LOADING (active: yfinance) ───────────
 def load_from_databento():
-    """Live MYM=F bars via yfinance (free, 15-min delay)."""
+    """Live MYM=F bars via Databento (free, 15-min delay)."""
     from data_feed import load_all_timeframes
     df_5m, df_15m, df_1h = load_all_timeframes()
-    log("Live data loaded from yfinance (15min delay)")
+    log("Live data loaded from Databento (15min delay)")
     return df_5m, df_15m, df_1h
 
 # ── CANDLE METRICS & SESSION (identical to strategy.py) ──
@@ -359,7 +359,7 @@ def run_signal_check():
     log("Running signal check (v7 strategy)...")
 
     try:
-        df_5m, df_15m, df_1h = load_from_yfinance()
+        df_5m, df_15m, df_1h = load_from_databento()
     except Exception as e:
         log(f"Data load failed: {e}")
         return
