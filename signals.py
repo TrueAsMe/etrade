@@ -20,7 +20,6 @@ from datetime import datetime
 import pandas as pd
 import pytz
 
-import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config   # no try/except around this — let it fail loudly
 print("config imported OK from:", config.__file__)
@@ -39,7 +38,7 @@ def log(msg):
     with open(config.LOG_FILE, "a") as f:
         f.write(line + "\n")
 
-# ── DATA LOADING (active: yfinance) ───────────
+# ── DATA LOADING (active: databento) ───────────
 def load_from_databento():
     """Live MYM=F bars via Databento (free, 15-min delay)."""
     from data_feed import load_all_timeframes
