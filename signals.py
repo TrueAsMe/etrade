@@ -367,38 +367,53 @@ def run_signal_check():
 
     df_5m  = add_session(add_candle_metrics(df_5m))
     df_15m = add_session(add_candle_metrics(df_15m))
-    df_1h = add_session(add_candle_metrics(df_1h))
-
+    df_1h  = add_session(add_candle_metrics(df_1h))
 
     ny = ["NY_AM", "NY_PM", "NY_PreMarket"]
     df_5m_ny  = df_5m[df_5m["session"].isin(ny)].copy()
     df_15m_ny = df_15m[df_15m["session"].isin(ny)].copy()
-    df_1h_ny = df_1h[df_1h["session"].isin(ny)].copy()
-
+    df_1h_ny  = df_1h[df_1h["session"].isin(ny)].copy()
 
     if len(df_15m_ny) < 50 or len(df_1h_ny) < config.ZONE_LOOKBACK_DAYS:
         log("Not enough NY-session bars for context — aborting run.")
         return
 
-    # v6 stop buffer: half rolling-median 5m range, capped vs zone height
+    # v7 stop buffer: half rolling-median 15m range, capped vs zone height
     stop_buffer = int(min(df_15m_ny["range"].rolling(20).median().iloc[-1] / 2,
                           config.MIN_ZONE_HEIGHT * 0.69))
     log(f"Stop buffer (v7 dynamic, capped): {stop_buffer} pts")
 
+    # Entry proximity band: keep only signals whose entry is within
+    # ENTRY_SIGMA std devs of the 14-bar range, measured from current price.
+    range_std     = df_15m_ny["range"].rolling(config.ENTRY_SIGMA_WINDOW).std().iloc[-1]
+    current_price = df_15m_ny["close"].iloc[-1]
+    entry_band    = config.ENTRY_SIGMA * range_std
+
+    log("=" * 62)
+    if pd.isna(range_std) or range_std == 0:
+        log(f"ENTRY BAND | range_std={range_std} -> GATE DISABLED THIS RUN (fails open)")
+    else:
+        log(f"ENTRY BAND | {config.ENTRY_SIGMA}sigma x {range_std:.2f} range-std "
+            f"({config.ENTRY_SIGMA_WINDOW}-bar) = +/-{entry_band:.1f} pts")
+        log(f"ENTRY BAND | price {current_price:.1f}  ->  "
+            f"VALID RANGE [{current_price - entry_band:.1f} , {current_price + entry_band:.1f}]")
+    log("=" * 62)
+
     try:
-        curve_bias = set_curve(df_1h_ny)      # v7: curve on 1h
+        curve_bias = set_curve(df_1h_ny)        # v7: curve on 1h
         trend      = classify_trend(df_15m_ny)  # v7: trend on 15m
     except Exception as e:
         log(f"Context failed: {e}")
         return
     log(f"Trend: {trend} | Curve: {curve_bias}")
 
-    # v6: zones detected on the recent window only (matches backtest)
+    # zones detected on the recent window only (matches backtest)
     zone_cutoff = df_15m_ny.index.max() - pd.Timedelta(days=config.ZONE_WINDOW_DAYS)
     zones = detect_zones(df_15m_ny[df_15m_ny.index >= zone_cutoff])
     log(f"Zones detected (last {config.ZONE_WINDOW_DAYS}d): {len(zones)}")
 
     signals_sent = 0
+    signals_skipped_band = 0
     for zone in zones:
         score = score_zone(zone, trend, curve_bias, zones)
         if score < config.MIN_SCORE:
@@ -406,6 +421,15 @@ def run_signal_check():
 
         sets = calculate_sets(zone, zones, stop_buffer=stop_buffer)
         if sets is None:
+            continue
+
+        # ── ENTRY PROXIMITY GATE (fail-open on bad std) ──
+        if pd.notna(range_std) and range_std > 0 \
+           and abs(sets["entry"] - current_price) > entry_band:
+            signals_skipped_band += 1
+            log(f"Skip {zone['type']} @ {sets['entry']}: "
+                f"{abs(sets['entry'] - current_price):.0f} pts from {current_price:.0f} "
+                f"> {entry_band:.0f} pt band ({config.ENTRY_SIGMA}sigma)")
             continue
 
         alert_data = {
@@ -437,7 +461,7 @@ def run_signal_check():
 
     if signals_sent == 0:
         log("No qualifying signals found this run.")
-    log(f"Done. {signals_sent} signal(s) sent.")
+    log(f"Done. {signals_sent} signal(s) sent, {signals_skipped_band} skipped by entry band.")
     log("=" * 50)
 
 if __name__ == "__main__":
