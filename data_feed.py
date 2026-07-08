@@ -34,7 +34,7 @@ STYPE_IN  = "raw_symbol"    # explicit native contract symbol (not a continuous 
 # closer to "now" returns 422 'dataset_unavailable_range'. Cap the request end this
 # far back (8h + 30m margin to stay safely inside the available window). Lower toward
 # 8h for slightly fresher data, or shrink it with a live CME subscription.
-DATA_LAG = pd.Timedelta(minutes=17)#hours=4,
+DATA_LAG = pd.Timedelta(minutes=16,seconds=25)#hours=4,
 
 def _client():
     """Databento Historical client. Key from config.DATABENTO_API_KEY or env."""
