@@ -47,11 +47,13 @@ RANGE_MULTIPLIER  = 0.36       # base range <= rolling-median * this
 MIN_ZONE_HEIGHT   = 30         # pts
 MAX_BASE_CANDLES  = 6
 STOP_BUFFER       = 8          # static fallback; live run computes dynamically
+ENTRY_SIGMA       = 7    # proximity band = this many std devs of bar range
+ENTRY_SIGMA_WINDOW= 14   # rolling window (bars) for the range std
 
-# Lookbacks — note the UNITS, they differ:
+# Lookbacks — note the candles, they differ:
 ZONE_LOOKBACK_DAYS  = 60       # set_curve: last 60 x 15m bars
 TREND_WINDOW        = 120       # classify_trend: rolling window of (last 10hrs) 5m bars
-ZONE_WINDOW_DAYS    = 120       # detect_zones: last 120 candles days (last 10hrs) of 5m
+ZONE_WINDOW_DAYS    = 120       # detect_zones: last 120 candles (last 10hrs) of 5m
 
 # ── SCHEDULER ─────────────────────────────────────────────────
 RUN_HOURS = [8, 9, 10, 11, 12]
