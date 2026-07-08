@@ -412,20 +412,16 @@ def run_signal_check():
     zone_cutoff = df_15m_ny.index.max() - pd.Timedelta(days=config.ZONE_WINDOW_DAYS)
     zones = detect_zones(df_15m_ny[df_15m_ny.index >= zone_cutoff])
     log(f"Zones detected (last {config.ZONE_WINDOW_DAYS}d): {len(zones)}")
-    for z in zones:
-        score = score_zone(z, trend, curve_bias, zones)
-        log(f"  {z['type']} prox={z['proximal']} distal={z['distal']} "
-            f"h={z['base_height']} base={z['base_count']} touch={z['touched']} "
-            f"score={score} formed={z['formed_at']}")
         
     signals_sent = 0
-    signals_skipped_band = 0
+    log("-" * 62)
+    sent = skipped_score = skipped_sets = skipped_band = 0
+
     for zone in zones:
         score = score_zone(zone, trend, curve_bias, zones)
         sets  = calculate_sets(zone, zones, stop_buffer=stop_buffer) \
                 if score >= config.MIN_SCORE else None
-        entry = sets["entry"] if sets else None
-        dist  = abs(entry - current_price) if entry is not None else None
+        dist  = abs(sets["entry"] - current_price) if sets else None
 
         # ── disposition ──
         if score < config.MIN_SCORE:
@@ -467,22 +463,15 @@ def run_signal_check():
             "potential_t1": sets["potential_t1_$"],
             "potential_t2": sets["potential_t2_$"],
         }
+        result = send_alert(alert_data)   # test_mode default=True in alerts.py
+        log(f"    TradersPost: ok={result.ok} id={result.signal_id} detail={result.detail}")
 
-        log(f"Signal: {zone['type']} @ {sets['entry']} (formed {zone['formed_at']}) | Score {score} | "
-            f"R:R T1 {sets['rr_t1']} | {sets['contracts']} contracts | "
-            f"risk ${sets['total_risk_$']}")
-        result = send_alert(alert_data)        # test_mode default=True in alerts.py
-        log(f"TradersPost: ok={result.ok} id={result.signal_id} detail={result.detail}")
-        signals_sent += 1
     log("-" * 62)
+    if sent == 0:
+        log("No qualifying signals found this run.")
     log(f"Done. {sent} sent | {skipped_score} low score | "
         f"{skipped_sets} no sets | {skipped_band} outside band")
     log("=" * 62)
-    
-    if signals_sent == 0:
-        log("No qualifying signals found this run.")
-    log(f"Done. {signals_sent} signal(s) sent, {signals_skipped_band} skipped by entry band.")
-    log("=" * 50)
 
 if __name__ == "__main__":
     run_signal_check()
