@@ -202,7 +202,8 @@ def detect_zones(df, max_base_candles=6, min_body_pct=42,
     return zones
 
 print("detect_zones loaded ✅")
-zones = detect_zones(df_15m_ny[df_15m_ny.index >= zone_cutoff])
+
+zones = detect_zones(df_15m[df_15m.index >= zone_cutoff])
 log(f"Zones detected (last {config.ZONE_WINDOW_DAYS}d): {len(zones)}")
 for z in zones:
     log(f"  {z['type']} prox={z['proximal']} distal={z['distal']} "
