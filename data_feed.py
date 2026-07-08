@@ -115,7 +115,7 @@ def _pull_1m(start, end=None):
 
 
 # -- OPTION 3: Databento | API CONNECTION ----------------------
-def load_from_databento(days=120, cache_path=None):
+def load_from_databento(days=200, cache_path=None):
     """Pull `days` of MYM 1-minute bars and resample to 5m + 15m.
 
     cache_path=None (DEFAULT): fresh pull of the full window each run -- simplest,
@@ -170,4 +170,4 @@ def estimate_databento_cost(days=120):
 
 if __name__ == "__main__":
     print(f"Est. Databento cost (120d 1m): ${estimate_databento_cost():.4f}")
-    df_1m, df_5m, df_15m, df_1h = load_from_databento(120)
+    df_1m, df_5m, df_15m, df_1h = load_from_databento(200)
