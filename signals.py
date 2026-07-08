@@ -413,6 +413,7 @@ def run_signal_check():
     zones = detect_zones(df_15m_ny[df_15m_ny.index >= zone_cutoff])
     log(f"Zones detected (last {config.ZONE_WINDOW_DAYS}d): {len(zones)}")
     for z in zones:
+        score = score_zone(z, trend, curve_bias, zones)
         log(f"  {z['type']} prox={z['proximal']} distal={z['distal']} "
             f"h={z['base_height']} base={z['base_count']} touch={z['touched']} "
             f"score={score} formed={z['formed_at']}")
