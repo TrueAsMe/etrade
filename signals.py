@@ -203,12 +203,6 @@ def detect_zones(df, max_base_candles=6, min_body_pct=42,
 
 print("detect_zones loaded ✅")
 
-zones = detect_zones(df_15m[df_15m.index >= zone_cutoff])
-log(f"Zones detected (last {config.ZONE_WINDOW_DAYS}d): {len(zones)}")
-for z in zones:
-    log(f"  {z['type']} prox={z['proximal']} distal={z['distal']} "
-        f"h={z['base_height']} base={z['base_count']} touch={z['touched']} "
-        f"formed={z['formed_at']}")
 
 # ── SCORING (identical in strategy.py and here — verified) ──
 def score_zone(zone, trend, curve_bias, all_zones):
@@ -418,7 +412,11 @@ def run_signal_check():
     zone_cutoff = df_15m_ny.index.max() - pd.Timedelta(days=config.ZONE_WINDOW_DAYS)
     zones = detect_zones(df_15m_ny[df_15m_ny.index >= zone_cutoff])
     log(f"Zones detected (last {config.ZONE_WINDOW_DAYS}d): {len(zones)}")
-
+    for z in zones:
+        log(f"  {z['type']} prox={z['proximal']} distal={z['distal']} "
+            f"h={z['base_height']} base={z['base_count']} touch={z['touched']} "
+            f"formed={z['formed_at']}")
+        
     signals_sent = 0
     signals_skipped_band = 0
     for zone in zones:
