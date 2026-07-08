@@ -35,7 +35,6 @@ STYPE_IN  = "raw_symbol"    # explicit native contract symbol (not a continuous 
 # far back (8h + 30m margin to stay safely inside the available window). Lower toward
 # 8h for slightly fresher data, or shrink it with a live CME subscription.
 DATA_LAG = pd.Timedelta(minutes=16)#hours=4,
-DATA_LOOKBACK = 200
 
 def _client():
     """Databento Historical client. Key from config.DATABENTO_API_KEY or env."""
@@ -115,7 +114,7 @@ def _pull_1m(start, end=None):
 
 
 # -- OPTION 3: Databento | API CONNECTION ----------------------
-def load_from_databento(days=DATA_LOOKBACK, cache_path=None):
+def load_from_databento(days=config.DATA_DAYS, cache_path=None):
     """Pull `days` of MYM 1-minute bars and resample to 5m + 15m.
 
     cache_path=None (DEFAULT): fresh pull of the full window each run -- simplest,
@@ -153,13 +152,13 @@ def load_from_databento(days=DATA_LOOKBACK, cache_path=None):
     return df_1m, df_5m, df_15m, df_1h
 
 
-def load_all_timeframes(days=DATA_LOOKBACK, cache_path=None):
+def load_all_timeframes(days=config.DATA_DAYS, cache_path=None):
     """Entry point used by signals.py. Returns (df_5m, df_15m)."""
     df_1m, df_5m, df_15m, df_1h = load_from_databento(days=days, cache_path=cache_path)
     return df_5m, df_15m, df_1h
 
 
-def estimate_databento_cost(days=DATA_LOOKBACK):
+def estimate_databento_cost(days=config.DATA_DAYS):
     """$ cost of the `days`-day 1m pull, WITHOUT spending credits. Call before a backfill."""
     start = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
     return _client().metadata.get_cost(

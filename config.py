@@ -33,22 +33,23 @@ DATA_DIR  = BASE / "data"
 DATA_1M   = str(DATA_DIR / "MYM_1m_tv_bento.csv")   # backtest base bars
 LOG_FILE  = str(BASE / "logs" / "signal_log.txt")
 
-# ── STRATEGY PARAMETERS (v6 — must match strategy.py backtest) ─
-TICKER            = "MYM"
-ACCOUNT_SIZE      = 50000
-RISK_PCT          = 0.005      # 0.5% per trade (v7 backtest value)
-TICK_VALUE        = 0.50       # MYM = $0.50/point (CME-verified; YM is $5)
-MIN_SCORE         = 7
-T2_CAP            = 2.5          # R:R cap on T2
-MAX_BODY_PCT      = 30         # base candle: body <= 40% of range
-MIN_BODY_PCT      = 35         # leg candle:  body >= 50% of range
-MIN_RANGE_RATIO   = 0.631      # leg range >= base_height * this
-RANGE_MULTIPLIER  = 0.36       # base range <= rolling-median * this
-MIN_ZONE_HEIGHT   = 30         # pts
-MAX_BASE_CANDLES  = 6
-STOP_BUFFER       = 8          # static fallback; live run computes dynamically
-ENTRY_SIGMA       = 7    # proximity band = this many std devs of bar range
-ENTRY_SIGMA_WINDOW= 14   # rolling window (bars) for the range std
+# ── STRATEGY PARAMETERS (v7 — must match strategy.py backtest) ─
+TICKER              = "MYM"
+ACCOUNT_SIZE        = 50000
+RISK_PCT            = 0.005      # 0.5% per trade (v7 backtest value)
+TICK_VALUE          = 0.50       # MYM = $0.50/point (CME-verified; YM is $5)
+MIN_SCORE           = 7
+T2_CAP              = 2.5          # R:R cap on T2
+MAX_BODY_PCT        = 30         # base candle: body <= 40% of range
+MIN_BODY_PCT        = 35         # leg candle:  body >= 50% of range
+MIN_RANGE_RATIO     = 0.631      # leg range >= base_height * this
+RANGE_MULTIPLIER    = 0.36       # base range <= rolling-median * this
+MIN_ZONE_HEIGHT     = 30         # pts
+MAX_BASE_CANDLES    = 6
+STOP_BUFFER         = 8          # static fallback; live run computes dynamically
+ENTRY_SIGMA         = 10    # proximity band = this many std devs of bar range
+ENTRY_SIGMA_WINDOW  = 14   # rolling window (bars) for the range std
+DATA_DAYS           = 120    # days of 1m history pulled from Databento each run
 
 # Lookbacks — note the candles, they differ:
 ZONE_LOOKBACK_DAYS  = 60       # set_curve: last 60 x 15m bars

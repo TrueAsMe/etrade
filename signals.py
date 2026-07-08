@@ -452,7 +452,7 @@ def run_signal_check():
             "potential_t2": sets["potential_t2_$"],
         }
 
-        log(f"Signal: {zone['type']} @ {sets['entry']} | Score {score} | "
+        log(f"Signal: {zone['type']} @ {sets['entry']} (formed {zone['formed_at']}) | Score {score} | "
             f"R:R T1 {sets['rr_t1']} | {sets['contracts']} contracts | "
             f"risk ${sets['total_risk_$']}")
         result = send_alert(alert_data)        # test_mode default=True in alerts.py
