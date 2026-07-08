@@ -422,20 +422,30 @@ def run_signal_check():
     signals_skipped_band = 0
     for zone in zones:
         score = score_zone(zone, trend, curve_bias, zones)
+        sets  = calculate_sets(zone, zones, stop_buffer=stop_buffer) \
+                if score >= config.MIN_SCORE else None
+        entry = sets["entry"] if sets else None
+        dist  = abs(entry - current_price) if entry is not None else None
+
+        # ── disposition ──
         if score < config.MIN_SCORE:
-            continue
+            disp = f"SKIP score {score} < {config.MIN_SCORE}"
+            skipped_score += 1
+        elif sets is None:
+            disp = "SKIP no valid sets (no target / RR too low)"
+            skipped_sets += 1
+        elif pd.notna(range_std) and range_std > 0 and dist > entry_band:
+            disp = f"SKIP {dist:.0f} pts from {current_price:.0f} > {entry_band:.0f} band"
+            skipped_band += 1
+        else:
+            disp = f"SEND {sets['contracts']}c risk ${sets['total_risk_$']} rr_t1 {sets['rr_t1']}"
+            sent += 1
 
-        sets = calculate_sets(zone, zones, stop_buffer=stop_buffer)
-        if sets is None:
-            continue
+        log(f"  {zone['type']} prox={zone['proximal']:<9} h={zone['base_height']:<6} "
+            f"base={zone['base_count']} touch={zone['touched']} score={score:<5} "
+            f"formed={zone['formed_at']} | {disp}")
 
-        # ── ENTRY PROXIMITY GATE (fail-open on bad std) ──
-        if pd.notna(range_std) and range_std > 0 \
-           and abs(sets["entry"] - current_price) > entry_band:
-            signals_skipped_band += 1
-            log(f"Skip {zone['type']} @ {sets['entry']}: "
-                f"{abs(sets['entry'] - current_price):.0f} pts from {current_price:.0f} "
-                f"> {entry_band:.0f} pt band ({config.ENTRY_SIGMA}sigma)")
+        if not disp.startswith("SEND"):
             continue
 
         alert_data = {
@@ -464,7 +474,11 @@ def run_signal_check():
         result = send_alert(alert_data)        # test_mode default=True in alerts.py
         log(f"TradersPost: ok={result.ok} id={result.signal_id} detail={result.detail}")
         signals_sent += 1
-
+    log("-" * 62)
+    log(f"Done. {sent} sent | {skipped_score} low score | "
+        f"{skipped_sets} no sets | {skipped_band} outside band")
+    log("=" * 62)
+    
     if signals_sent == 0:
         log("No qualifying signals found this run.")
     log(f"Done. {signals_sent} signal(s) sent, {signals_skipped_band} skipped by entry band.")
@@ -472,3 +486,50 @@ def run_signal_check():
 
 if __name__ == "__main__":
     run_signal_check()
+
+
+    for zone in zones:
+        score = score_zone(zone, trend, curve_bias, zones)
+        sets  = calculate_sets(zone, zones, stop_buffer=stop_buffer) \
+                if score >= config.MIN_SCORE else None
+        entry = sets["entry"] if sets else None
+        dist  = abs(entry - current_price) if entry is not None else None
+
+        # ── disposition ──
+        if score < config.MIN_SCORE:
+            disp = f"SKIP score {score} < {config.MIN_SCORE}"
+            skipped_score += 1
+        elif sets is None:
+            disp = "SKIP no valid sets (no target / RR too low)"
+            skipped_sets += 1
+        elif pd.notna(range_std) and range_std > 0 and dist > entry_band:
+            disp = f"SKIP {dist:.0f} pts from {current_price:.0f} > {entry_band:.0f} band"
+            skipped_band += 1
+        else:
+            disp = f"SEND {sets['contracts']}c risk ${sets['total_risk_$']} rr_t1 {sets['rr_t1']}"
+            sent += 1
+
+        log(f"  {zone['type']} prox={zone['proximal']:<9} h={zone['base_height']:<6} "
+            f"base={zone['base_count']} touch={zone['touched']} score={score:<5} "
+            f"formed={zone['formed_at']} | {disp}")
+
+        if not disp.startswith("SEND"):
+            continue
+
+        alert_data = {
+            "type": zone["type"], "entry": sets["entry"], "stop": sets["stop"],
+            "t1": sets["t1"], "t2": sets["t2"], "stop_points": sets["stop_points"],
+            "rr_t1": sets["rr_t1"], "rr_t2": sets["rr_t2"],
+            "t1_points": sets["t1_points"], "t2_points": sets["t2_points"],
+            "contracts": sets["contracts"], "score": score,
+            "untouched?": zone["touched"], "formed_at": zone["formed_at"],
+            "total_risk": sets["total_risk_$"],
+            "potential_t1": sets["potential_t1_$"], "potential_t2": sets["potential_t2_$"],
+        }
+        result = send_alert(alert_data)
+        log(f"    TradersPost: ok={result.ok} id={result.signal_id} detail={result.detail}")
+
+    log("-" * 62)
+    log(f"Done. {sent} sent | {skipped_score} low score | "
+        f"{skipped_sets} no sets | {skipped_band} outside band")
+    log("=" * 62)
