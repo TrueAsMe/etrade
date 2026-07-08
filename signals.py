@@ -415,7 +415,7 @@ def run_signal_check():
     for z in zones:
         log(f"  {z['type']} prox={z['proximal']} distal={z['distal']} "
             f"h={z['base_height']} base={z['base_count']} touch={z['touched']} "
-            f"formed={z['formed_at']} score={z['score']}")
+            f"score={score} formed={z['formed_at']}")
         
     signals_sent = 0
     signals_skipped_band = 0
