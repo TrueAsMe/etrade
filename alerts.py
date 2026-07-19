@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # DECLARE TEST MODE
 # test_mode: when True, adds "test": true so TradersPost validates only.
-test_mode = False
+test_mode = TEST_MODE
 
 # ── EMAIL ─────────────────────────────────────
 def send_email(subject, body):
