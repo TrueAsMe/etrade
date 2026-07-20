@@ -255,7 +255,7 @@ def score_zone(zone, trend, curve_bias, all_zones):
 
 def calculate_sets(zone, all_zones, account_size=config.ACCOUNT_SIZE,
                    risk_pct=config.RISK_PCT, tick_value=config.TICK_VALUE,
-                   stop_buffer=config.STOP_BUFFER, t2_cap=config.T2_CAP):
+                   stop_buffer=config.STOP_BUFFER, t2_cap=config.T2_CAP, min_zone_height=min_zone_height):
     if "df_15m_ny" in globals():
         print(f"stop_buffer : {stop_buffer} pts  (cap {int(min_zone_height * 0.7)} pts | "
             f"capped: {stop_buffer == int(min_zone_height * 0.7)})")
@@ -433,7 +433,7 @@ def run_signal_check():
         #    ...and record zone_id after a successful send. Not active now.
 
         score = score_zone(zone, trend, curve_bias, zones)
-        sets  = calculate_sets(zone, zones, stop_buffer) \
+        sets  = calculate_sets(zone, zones, stop_buffer=stop_buffer) \
                 if score >= config.MIN_SCORE else None
         e     = sets["entry"] if sets else None
         dist  = abs(e - current_price) if sets else None

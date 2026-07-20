@@ -20,6 +20,7 @@
 # ── PATHS (environment-overridable) ───────────────────────────
 import os
 from pathlib import Path
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -27,30 +28,42 @@ except ImportError:
     pass  # cloud host sets env vars directly
 import pandas as pd
 
+def _require(name):
+    """Return a required env var, or fail loudly with a clear message."""
+    val = os.getenv(name)
+    if not val:
+        raise RuntimeError(
+            f"Missing required environment variable: {name}. "
+            f"Set it in your local .env or the cloud host's environment. "
+            f"See .env.example for the full list."
+        )
+    return val
+
+
 BASE      = Path(os.getenv("MYM_BASE", os.path.expanduser("~/strategy/etrade_v2")))
 DATA_DIR  = BASE / "data"
 #DATA_1M   = str(DATA_DIR / "MYM_1m_tv_bento.csv")   # backtest base bars
 LOG_FILE  = str(BASE / "logs" / "signal_log.txt")
 # -- CONTRACT / DATASET ----------------------------------------
-DATASET  = "GLBX.MDP3" # CME Globex (covers CBOT / MYM)
+DATASET             = "GLBX.MDP3" # CME Globex (covers CBOT / MYM)
 # Explicit contract, pinned manually to avoid continuous-roll splicing.
 # MYMU6 = Micro E-mini Dow, SEPTEMBER 2026 (root+month+1-digit year; U=Sep, 6=2026).
 # >>> UPDATE at each quarterly roll (H=Mar, M=Jun, U=Sep, Z=Dec) <<<
-SYMBOL   = "MYMU6"
-STYPE_IN = "raw_symbol"                             # explicit contract symbol
+SYMBOL              = "MYMU6"
+STYPE_IN            = "raw_symbol"                             # explicit contract symbol
 # --- continuous layout (use INSTEAD of the two lines above) ---
 #SYMBOL   = "MYM.v.0"                               # volume-weighted continuous
 #STYPE_IN = "continuous"
-SCHEMA   = "ohlcv-1m"                               # 5m/15m/1h are resampled from this
-DATA_LAG = pd.Timedelta(minutes=16)    # keep Historical API end inside the available edge
-PX_SCALE = 1e9                                      # Live prices are raw ints; Historical .to_df() is pre-scaled
+SCHEMA              = "ohlcv-1m"                               # 5m/15m/1h are resampled from this
+DATA_LAG            = pd.Timedelta(minutes=16)    # keep Historical API end inside the available edge
+PX_SCALE            = 1e9                                      # Live prices are raw ints; Historical .to_df() is pre-scaled
 TEST_MODE           = True
 
 
 # ── STRATEGY PARAMETERS (v7 — must match strategy.py backtest) ─
 TICKER              = "MYM"
 ACCOUNT_SIZE        = 50000
-RISK_PCT            = 0.006         # 0.5% per trade (v7 backtest value)
+RISK_PCT            = 0.004         # 0.5% per trade (v7 backtest value)
 TICK_VALUE          = 0.50          # MYM = $0.50/point (CME-verified; YM is $5)
 MIN_SCORE           = 5
 T2_CAP              = 2.4           # R:R cap on T2
