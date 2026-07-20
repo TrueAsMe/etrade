@@ -52,7 +52,7 @@ RANGE_MULTIPLIER    = 0.36          # base range <= rolling-median * this
 MIN_ZONE_HEIGHT     = 13            # pts
 MAX_BASE_CANDLES    = 6
 STOP_BUFFER         = 8             # static fallback; live run computes dynamically
-ENTRY_SIGMA         = 10            # proximity band = this many std devs of bar range
+ENTRY_SIGMA         = 2            # proximity band = this many std devs of bar range
 ENTRY_SIGMA_WINDOW  = 14            # rolling window (bars) for the range std
 DATA_DAYS           = 150           # days of 1m history pulled from Databento each run
 MAX_TAPS            = 5             # reject a zone once it has been tapped this many times
@@ -99,3 +99,13 @@ SCHWAB_HEADLESS         = os.getenv("SCHWAB_HEADLESS", "")
 # Secrets required ONLY to send alerts. Enforced at send time, not import.
 ALERT_REQUIRED = ["EMAIL_SENDER", "EMAIL_PASSWORD", "DISCORD_WEBHOOK_URL",
                   "TRADERSPOST_WEBHOOK_URL"]
+
+def require_alert_secrets():
+    """Raise if any alert secret is missing. Call before sending alerts."""
+    missing = [k for k in ALERT_REQUIRED if not globals().get(k)]
+    if missing:
+        raise RuntimeError(
+            f"Cannot send alert — missing secrets: {', '.join(missing)}. "
+            f"Set them in your local .env or the cloud host's environment. "
+            f"(Backtests/notebooks do not need these.)"
+        )
