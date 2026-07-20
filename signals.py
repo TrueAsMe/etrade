@@ -433,7 +433,7 @@ def run_signal_check():
         #    ...and record zone_id after a successful send. Not active now.
 
         score = score_zone(zone, trend, curve_bias, zones)
-        sets  = calculate_sets(zone, zones, stop_buffer=stop_buffer) \
+        sets  = calculate_sets(zone, zones, stop_buffer) \
                 if score >= config.MIN_SCORE else None
         e     = sets["entry"] if sets else None
         dist  = abs(e - current_price) if sets else None
