@@ -18,6 +18,14 @@
 # Never commit real secrets to this file.
 # ---------------------------------------------------------------
 # ── PATHS (environment-overridable) ───────────────────────────
+import os
+from pathlib import Path
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # cloud host sets env vars directly
+
 BASE      = Path(os.getenv("MYM_BASE", os.path.expanduser("~/strategy/etrade_v2")))
 DATA_DIR  = BASE / "data"
 #DATA_1M   = str(DATA_DIR / "MYM_1m_tv_bento.csv")   # backtest base bars
