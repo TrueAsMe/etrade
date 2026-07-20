@@ -385,6 +385,8 @@ def run_signal_check():
         log("Warm-up windows too small this run — aborting.")
         return
 
+    stop_buffer = int(min(df_15m_ny["range"].rolling(20).median().iloc[-1] / 2,
+                            config.MIN_ZONE_HEIGHT * 0.7))
     # σ-band (KEPT — live-only gate the backtest lacks)
     # Entry proximity band: keep only signals whose entry is within
     # ENTRY_SIGMA std devs of the 14-bar range, measured from current price.
