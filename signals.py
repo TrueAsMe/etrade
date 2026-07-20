@@ -451,6 +451,10 @@ def run_signal_check():
             if not bracket_ok:
                 disp = f"!! MALFORMED BRACKET stop={s} entry={e} t1={t1} t2={t2}"
                 skipped_bracket += 1
+            elif (current_price <= sets["stop"]) if zone["type"] == "DBR" \
+                 else (current_price >= sets["stop"]):
+                disp = f"SKIP price {current_price} past stop {sets['stop']}"
+                skipped_stopbreach += 1
             elif not entry_window_ok:
                 disp = f"SKIP outside entry window (bar hour {last_1m_hour})"
                 skipped_cutoff += 1
