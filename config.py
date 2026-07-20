@@ -25,6 +25,7 @@ try:
     load_dotenv()
 except ImportError:
     pass  # cloud host sets env vars directly
+import pandas as pd
 
 BASE      = Path(os.getenv("MYM_BASE", os.path.expanduser("~/strategy/etrade_v2")))
 DATA_DIR  = BASE / "data"
