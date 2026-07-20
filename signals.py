@@ -256,12 +256,6 @@ def score_zone(zone, trend, curve_bias, all_zones):
 def calculate_sets(zone, all_zones, account_size=config.ACCOUNT_SIZE,
                    risk_pct=config.RISK_PCT, tick_value=config.TICK_VALUE,
                    stop_buffer=config.STOP_BUFFER, t2_cap=config.T2_CAP):
-    if "df_15m_ny" in globals():
-        print(f"stop_buffer : {stop_buffer} pts  (cap {int(min_zone_height * 0.7)} pts | "
-            f"capped: {stop_buffer == int(min_zone_height * 0.7)})")
-    else:
-        stop_buffer = config.STOP_BUFFER
-        print(f"df_15m_ny not built yet -> stop_buffer defaults to config.STOP_BUFFER={stop_buffer}")    
     if zone["type"] == "DBR":
         entry = zone["base_high"]; stop = zone["base_low"] - stop_buffer
     else:
