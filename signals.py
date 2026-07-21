@@ -469,8 +469,10 @@ def run_signal_check():
                     disp = f"SEND {sets['contracts']}c risk ${sets['total_risk_$']} rr_t1 {sets['rr_t1']}"
                     sent += 1
 
-        log(f"  {zone['type']} @ {zone['proximal']} score={score} touch={zone['touched']} | {disp}")
-        
+        log(f"  {zone['type']} prox={zone['proximal']:<9} h={zone['base_height']:<6} "
+            f"base={zone['base_count']} touch={zone['touched']} score={score:<5} "
+            f"formed={zone['formed_at']} | {disp}")
+     
         if not disp.startswith("SEND"):
             continue
 
