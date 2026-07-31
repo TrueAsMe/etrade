@@ -13,8 +13,8 @@ load_dotenv()
 
 import alerts
 import signals
-from etrade_stage.alerts import flatten
-from etrade_stage.signals import run_signal_check
+from alerts import flatten
+from signals import run_signal_check
 import config
 
 TIMEZONE = pytz.timezone("US/Eastern")
