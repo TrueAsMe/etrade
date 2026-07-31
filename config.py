@@ -40,7 +40,7 @@ def _require(name):
     return val
 
 
-BASE      = Path(os.getenv("MYM_BASE", os.path.expanduser("~/strategy/etrade_v2")))
+BASE      = Path(os.getenv("MYM_BASE", os.path.expanduser("~/etrade")))
 DATA_DIR  = BASE / "data"
 #DATA_1M   = str(DATA_DIR / "MYM_1m_tv_bento.csv")   # backtest base bars
 LOG_FILE  = str(BASE / "logs" / "signal_log.txt")
@@ -49,35 +49,35 @@ DATASET             = "GLBX.MDP3" # CME Globex (covers CBOT / MYM)
 # Explicit contract, pinned manually to avoid continuous-roll splicing.
 # MYMU6 = Micro E-mini Dow, SEPTEMBER 2026 (root+month+1-digit year; U=Sep, 6=2026).
 # >>> UPDATE at each quarterly roll (H=Mar, M=Jun, U=Sep, Z=Dec) <<<
-SYMBOL              = "MYMU6"
-STYPE_IN            = "raw_symbol"                             # explicit contract symbol
+#SYMBOL              = "MYMU6"
+#STYPE_IN            = "raw_symbol"                             # explicit contract symbol
 # --- continuous layout (use INSTEAD of the two lines above) ---
-#SYMBOL   = "MYM.v.0"                               # volume-weighted continuous
-#STYPE_IN = "continuous"
-SCHEMA              = "ohlcv-1m"                               # 5m/15m/1h are resampled from this
-DATA_LAG            = pd.Timedelta(minutes=20)    # keep Historical API end inside the available edge
-PX_SCALE            = 1e9                                      # Live prices are raw ints; Historical .to_df() is pre-scaled
-TEST_MODE           = False
+SYMBOL               = "MYM.v.0"                               # volume-weighted continuous
+STYPE_IN             = "continuous"
+SCHEMA               = "ohlcv-1m"                               # 5m/15m/1h are resampled from this
+DATA_LAG             = pd.Timedelta(minutes=16)    # keep Historical API end inside the available edge
+PX_SCALE             = 1e9                                      # Live prices are raw ints; Historical .to_df() is pre-scaled
+TEST_MODE            = True
 
 
 # ── STRATEGY PARAMETERS (v7 — must match strategy.py backtest) ─
 TICKER              = "MYM"
 ACCOUNT_SIZE        = 50000
-RISK_PCT            = 0.004         # 0.5% per trade (v7 backtest value)
+RISK_PCT            = 0.005         # 0.5% per trade (v7 backtest value)
 TICK_VALUE          = 0.50          # MYM = $0.50/point (CME-verified; YM is $5)
-MIN_SCORE           = 5
-T2_CAP              = 2.4           # R:R cap on T2
-MAX_BODY_PCT        = 35            # base candle: body <= 40% of range
-MIN_BODY_PCT        = 43            # leg candle:  body >= 50% of range
+MIN_SCORE           = 4
+T2_CAP              = 2.5           # R:R cap on T2
+MAX_BODY_PCT        = 40            # base candle: body <= 40% of range
+MIN_BODY_PCT        = 42            # leg candle:  body >= 50% of range
 MIN_RANGE_RATIO     = 0.631         # leg range >= base_height * this
-RANGE_MULTIPLIER    = 0.36          # base range <= rolling-median * this
+RANGE_MULTIPLIER    = 1.01          # base range <= rolling-median * this
 MIN_ZONE_HEIGHT     = 13            # pts
-MAX_BASE_CANDLES    = 6
+MAX_BASE_CANDLES    = 9
 STOP_BUFFER         = 8             # static fallback; live run computes dynamically
-ENTRY_SIGMA         = 2            # proximity band = this many std devs of bar range
-ENTRY_SIGMA_WINDOW  = 14            # rolling window (bars) for the range std
+ENTRY_SIGMA         = 1            # proximity band = this many std devs of bar range
+ENTRY_SIGMA_WINDOW  = 20            # rolling window (bars) for the range std
 DATA_DAYS           = 150           # days of 1m history pulled from Databento each run
-MAX_TAPS            = 43             # reject a zone once it has been tapped this many times
+MAX_TAPS            = 16             # reject a zone once it has been tapped this many times
 # min_zone_height calc that goes just before detect_zones
 ZONE_HEIGHT_K       = 0.38
 ENTRY_HOUR_MIN      = 8             # earliest ET hour an entry may trigger
