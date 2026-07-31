@@ -55,7 +55,7 @@ DATASET             = "GLBX.MDP3" # CME Globex (covers CBOT / MYM)
 SYMBOL               = "MYM.v.0"                               # volume-weighted continuous
 STYPE_IN             = "continuous"
 SCHEMA               = "ohlcv-1m"                               # 5m/15m/1h are resampled from this
-DATA_LAG             = pd.Timedelta(minutes=20, seconds=35)    # keep Historical API end inside the available edge
+DATA_LAG             = pd.Timedelta(minutes=16, seconds=32)    # keep Historical API end inside the available edge
 PX_SCALE             = 1e9                                      # Live prices are raw ints; Historical .to_df() is pre-scaled
 TEST_MODE            = True
 
@@ -76,7 +76,7 @@ MAX_BASE_CANDLES    = 9
 STOP_BUFFER         = 8             # static fallback; live run computes dynamically
 ENTRY_SIGMA         = 1            # proximity band = this many std devs of bar range
 ENTRY_SIGMA_WINDOW  = 20            # rolling window (bars) for the range std
-DATA_DAYS           = 150           # days of 1m history pulled from Databento each run
+DATA_DAYS           = 130           # days of 1m history pulled from Databento each run
 MAX_TAPS            = 16   
 TEST_MODE           = False # reject a zone once it has been tapped this many times
 # min_zone_height calc that goes just before detect_zones
