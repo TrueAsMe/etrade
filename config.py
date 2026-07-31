@@ -55,7 +55,7 @@ DATASET             = "GLBX.MDP3" # CME Globex (covers CBOT / MYM)
 SYMBOL               = "MYM.v.0"                               # volume-weighted continuous
 STYPE_IN             = "continuous"
 SCHEMA               = "ohlcv-1m"                               # 5m/15m/1h are resampled from this
-DATA_LAG             = pd.Timedelta(minutes=20)    # keep Historical API end inside the available edge
+DATA_LAG             = pd.Timedelta(minutes=20, seconds=35)    # keep Historical API end inside the available edge
 PX_SCALE             = 1e9                                      # Live prices are raw ints; Historical .to_df() is pre-scaled
 TEST_MODE            = True
 
