@@ -81,7 +81,7 @@ MAX_TAPS            = 16
 TEST_MODE           = False # reject a zone once it has been tapped this many times
 # min_zone_height calc that goes just before detect_zones
 ZONE_HEIGHT_K       = 0.38
-ENTRY_HOUR_MIN      = 8             # earliest ET hour an entry may trigger
+ENTRY_HOUR_MIN      = 7             # earliest ET hour an entry may trigger
 CUTOFF_HOUR         = 16            # 4:00 PM EST hard cutoff
 ENTRY_HOUR_MAX      = CUTOFF_HOUR   # exclusive — no entries at/after this hour
 
