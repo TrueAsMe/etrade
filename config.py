@@ -77,7 +77,8 @@ STOP_BUFFER         = 8             # static fallback; live run computes dynamic
 ENTRY_SIGMA         = 1            # proximity band = this many std devs of bar range
 ENTRY_SIGMA_WINDOW  = 20            # rolling window (bars) for the range std
 DATA_DAYS           = 150           # days of 1m history pulled from Databento each run
-MAX_TAPS            = 16             # reject a zone once it has been tapped this many times
+MAX_TAPS            = 16   
+TEST_MODE           = False # reject a zone once it has been tapped this many times
 # min_zone_height calc that goes just before detect_zones
 ZONE_HEIGHT_K       = 0.38
 ENTRY_HOUR_MIN      = 8             # earliest ET hour an entry may trigger
