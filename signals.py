@@ -20,6 +20,7 @@ from datetime import datetime
 import pandas as pd
 import pytz
 import numpy as np
+from schwab_data import build_client, get_live_quote_ohlc
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -385,7 +386,20 @@ def run_signal_check():
     # Entry proximity band: keep only signals whose entry is within
     # ENTRY_SIGMA std devs of the 14-bar range, measured from current price.
     range_std     = df_15m_ny["range"].rolling(config.ENTRY_SIGMA_WINDOW).std().iloc[-1]
-    current_price = df_1m_ny["close"].iloc[-1]
+    try:
+    _snap = get_live_quote_ohlc(build_client(), config.SCHWAB_QUOTE_SYMBOL)
+    current_price = float(_snap["last"] or _snap["close"])
+    _age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(_snap["datetime"]).tz_convert("UTC")).total_seconds()
+    log(f"Live price (Schwab {config.SCHWAB_QUOTE_SYMBOL}): {current_price} "
+        f"@ {_snap['datetime']} (age {int(_age)}s)")
+    if _age > 300:
+        log("  WARNING: Schwab quote >5min old — may be delayed, not real-time.")
+except Exception as e:
+    current_price = float(df_1m_ny["close"].iloc[-1])
+    log(f"Schwab quote failed ({e}) — FELL BACK to Databento close {current_price}")
+    
+    
+    
     entry_band    = config.ENTRY_SIGMA * range_std
     log("=" * 62)
     
@@ -410,9 +424,9 @@ def run_signal_check():
 
     # ── entry-search context: the latest closed 1m bar (mirrors backtest's
     #    close-through on df_1m; here it's the single most recent bar). ──
-    last_1m_close = float(df_1m_ny["close"].iloc[-1])
-    last_1m_hour  = df_1m_ny.index[-1].hour        # ET (add_session converts)
-    entry_window_ok = config.ENTRY_HOUR_MIN <= last_1m_hour < config.CUTOFF_HOUR
+    last_1m_close = current_price                       # live price drives close-through
+    now_et = datetime.now(pytz.timezone(config.TIMEZONE))
+    entry_window_ok = config.ENTRY_HOUR_MIN <= now_et.hour < config.CUTOFF_HOUR
 
     log("-" * 62)
     sent = skipped_score = skipped_taps = skipped_sets = 0
