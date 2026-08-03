@@ -430,7 +430,7 @@ def run_signal_check():
 
     log("-" * 62)
     sent = skipped_score = skipped_taps = skipped_sets = 0
-    skipped_band = skipped_bracket = skipped_notouch = skipped_cutoff = 0
+    skipped_band = skipped_bracket = skipped_notouch = skipped_cutoff = skipped_stopbreach = 0
 
     for zone in zones:
         # ── DEDUP: delegated to TradersPost ("Allow Add to Position" = OFF, confirmed).
@@ -470,7 +470,7 @@ def run_signal_check():
                 disp = f"SKIP price {current_price} past stop {sets['stop']}"
                 skipped_stopbreach += 1
             elif not entry_window_ok:
-                disp = f"SKIP outside entry window (bar hour {last_1m_hour})"
+                disp = f"SKIP outside entry window (hour {now_et.hour})"
                 skipped_cutoff += 1
             else:
                 # close-through: has the latest 1m bar closed through entry?
@@ -518,8 +518,8 @@ def run_signal_check():
     if sent == 0:
         log("No qualifying signals found this run.")
     log(f"Done. {sent} sent | {skipped_score} score | {skipped_taps} taps | "
-        f"{skipped_sets} no-sets | {skipped_band} band | {skipped_bracket} bracket | "
-        f"{skipped_notouch} no-through | {skipped_cutoff} window")
+    f"{skipped_sets} no-sets | {skipped_band} band | {skipped_bracket} bracket | "
+    f"{skipped_notouch} no-through | {skipped_cutoff} window | {skipped_stopbreach} past-stop")
     log("=" * 62)
 
 if __name__ == "__main__":
