@@ -387,16 +387,16 @@ def run_signal_check():
     # ENTRY_SIGMA std devs of the 14-bar range, measured from current price.
     range_std     = df_15m_ny["range"].rolling(config.ENTRY_SIGMA_WINDOW).std().iloc[-1]
     try:
-    _snap = get_live_quote_ohlc(build_client(), config.SCHWAB_QUOTE_SYMBOL)
-    current_price = float(_snap["last"] or _snap["close"])
-    _age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(_snap["datetime"]).tz_convert("UTC")).total_seconds()
-    log(f"Live price (Schwab {config.SCHWAB_QUOTE_SYMBOL}): {current_price} "
-        f"@ {_snap['datetime']} (age {int(_age)}s)")
-    if _age > 300:
-        log("  WARNING: Schwab quote >5min old — may be delayed, not real-time.")
-except Exception as e:
-    current_price = float(df_1m_ny["close"].iloc[-1])
-    log(f"Schwab quote failed ({e}) — FELL BACK to Databento close {current_price}")
+        _snap = get_live_quote_ohlc(build_client(), config.SCHWAB_QUOTE_SYMBOL)
+        current_price = float(_snap["last"] or _snap["close"])
+        _age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(_snap["datetime"]).tz_convert("UTC")).total_seconds()
+        log(f"Live price (Schwab {config.SCHWAB_QUOTE_SYMBOL}): {current_price} "
+            f"@ {_snap['datetime']} (age {int(_age)}s)")
+        if _age > 300:
+            log("  WARNING: Schwab quote >5min old — may be delayed, not real-time.")
+    except Exception as e:
+        current_price = float(df_1m_ny["close"].iloc[-1])
+        log(f"Schwab quote failed ({e}) — FELL BACK to Databento close {current_price}")
     
     
     
