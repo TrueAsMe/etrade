@@ -82,6 +82,9 @@ ZONE_HEIGHT_K       = 0.38
 ENTRY_HOUR_MIN      = 7             # earliest ET hour an entry may trigger
 CUTOFF_HOUR         = 16            # 4:00 PM EST hard cutoff
 ENTRY_HOUR_MAX      = CUTOFF_HOUR   # exclusive — no entries at/after this hour
+# Schwab quote symbol — explicit contract (NOT the Databento continuous code).
+# >>> bump at each quarterly roll, same as data_feed SYMBOL <<<
+SCHWAB_QUOTE_SYMBOL = "/MYMU26"     # Micro Dow, Sep 2026
 
 # Lookbacks — note the candles, they differ:
 ZONE_LOOKBACK_DAYS  = 60       # set_curve: prev 60 x 1h bars
