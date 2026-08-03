@@ -57,8 +57,6 @@ STYPE_IN             = "continuous"
 SCHEMA               = "ohlcv-1m"                               # 5m/15m/1h are resampled from this
 DATA_LAG             = pd.Timedelta(minutes=16, seconds=32)    # keep Historical API end inside the available edge
 PX_SCALE             = 1e9                                      # Live prices are raw ints; Historical .to_df() is pre-scaled
-TEST_MODE            = True
-
 
 # ── STRATEGY PARAMETERS (v7 — must match strategy.py backtest) ─
 TICKER              = "MYM"
