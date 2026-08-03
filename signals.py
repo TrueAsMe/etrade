@@ -385,7 +385,7 @@ def run_signal_check():
     # Entry proximity band: keep only signals whose entry is within
     # ENTRY_SIGMA std devs of the 14-bar range, measured from current price.
     range_std     = df_15m_ny["range"].rolling(config.ENTRY_SIGMA_WINDOW).std().iloc[-1]
-    current_price = df_15m_ny["close"].iloc[-1]
+    current_price = df_1m_ny["close"].iloc[-1]
     entry_band    = config.ENTRY_SIGMA * range_std
     log("=" * 62)
     
