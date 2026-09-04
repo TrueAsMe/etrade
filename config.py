@@ -50,13 +50,13 @@ DATASET             = "GLBX.MDP3" # CME Globex (covers CBOT / MYM)
 # MYMU6 = Micro E-mini Dow, SEPTEMBER 2026 (root+month+1-digit year; U=Sep, 6=2026).
 # >>> UPDATE at each quarterly roll (H=Mar, M=Jun, U=Sep, Z=Dec) <<<
 #SYMBOL              = "MYMU6"
-#STYPE_IN            = "raw_symbol"                             # explicit contract symbol
+#STYPE_IN            = "raw_symbol"                            # explicit contract symbol
 # --- continuous layout (use INSTEAD of the two lines above) ---
 SYMBOL               = "MYM.v.0"                               # volume-weighted continuous
 STYPE_IN             = "continuous"
-SCHEMA               = "ohlcv-1m"                               # 5m/15m/1h are resampled from this
-DATA_LAG             = pd.Timedelta(minutes=16, seconds=32)    # keep Historical API end inside the available edge
-PX_SCALE             = 1e9                                      # Live prices are raw ints; Historical .to_df() is pre-scaled
+SCHEMA               = "ohlcv-1m"                              # 5m/15m/1h are resampled from this
+DATA_LAG             = pd.Timedelta(hours=3)    # keep Historical API end inside the available edge
+PX_SCALE             = 1e9                                     # Live prices are raw ints; Historical .to_df() is pre-scaled
 
 # ── STRATEGY PARAMETERS (v7 — must match strategy.py backtest) ─
 TICKER              = "MYM"
@@ -72,9 +72,10 @@ RANGE_MULTIPLIER    = 1.01          # base range <= rolling-median * this
 MIN_ZONE_HEIGHT     = 13            # pts
 MAX_BASE_CANDLES    = 9
 STOP_BUFFER         = 8             # static fallback; live run computes dynamically
-ENTRY_SIGMA         = 1            # proximity band = this many std devs of bar range
+ENTRY_SIGMA         = 1             # proximity band = this many std devs of bar range
 ENTRY_SIGMA_WINDOW  = 20            # rolling window (bars) for the range std
 DATA_DAYS           = 130           # days of 1m history pulled from Databento each run
+                                     # (>= TREND_WINDOW=120d so detect_zones's lookback is fully covered)
 MAX_TAPS            = 16   
 TEST_MODE           = False # reject a zone once it has been tapped this many times
 # min_zone_height calc that goes just before detect_zones

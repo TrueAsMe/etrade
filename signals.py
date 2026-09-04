@@ -20,7 +20,6 @@ from datetime import datetime
 import pandas as pd
 import pytz
 import numpy as np
-from schwab_data import build_client, get_live_quote_ohlc
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -386,20 +385,13 @@ def run_signal_check():
     # Entry proximity band: keep only signals whose entry is within
     # ENTRY_SIGMA std devs of the 14-bar range, measured from current price.
     range_std     = df_15m_ny["range"].rolling(config.ENTRY_SIGMA_WINDOW).std().iloc[-1]
-    try:
-    _snap = get_live_quote_ohlc(build_client(), config.SCHWAB_QUOTE_SYMBOL)
-    current_price = float(_snap["last"] or _snap["close"])
-    _age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(_snap["datetime"]).tz_convert("UTC")).total_seconds()
-    log(f"Live price (Schwab {config.SCHWAB_QUOTE_SYMBOL}): {current_price} "
-        f"@ {_snap['datetime']} (age {int(_age)}s)")
-    if _age > 300:
-        log("  WARNING: Schwab quote >5min old — may be delayed, not real-time.")
-except Exception as e:
+    # Schwab quote snapshot (get_live_quote_ohlc) was a workaround for Databento
+    # Historical's ~15min data lag before db.Live was wired up. Now that
+    # data_feed.run_live_feed() keeps df_1m current to the latest closed minute,
+    # the Databento close IS the live price — sunset, no Schwab call needed here.
     current_price = float(df_1m_ny["close"].iloc[-1])
-    log(f"Schwab quote failed ({e}) — FELL BACK to Databento close {current_price}")
-    
-    
-    
+    log(f"Live price (Databento): {current_price} @ {df_1m_ny.index[-1]}")
+
     entry_band    = config.ENTRY_SIGMA * range_std
     log("=" * 62)
     
@@ -430,7 +422,7 @@ except Exception as e:
 
     log("-" * 62)
     sent = skipped_score = skipped_taps = skipped_sets = 0
-    skipped_band = skipped_bracket = skipped_notouch = skipped_cutoff = 0
+    skipped_band = skipped_bracket = skipped_notouch = skipped_cutoff = skipped_stopbreach = 0
 
     for zone in zones:
         # ── DEDUP: delegated to TradersPost ("Allow Add to Position" = OFF, confirmed).
@@ -470,7 +462,7 @@ except Exception as e:
                 disp = f"SKIP price {current_price} past stop {sets['stop']}"
                 skipped_stopbreach += 1
             elif not entry_window_ok:
-                disp = f"SKIP outside entry window (bar hour {last_1m_hour})"
+                disp = f"SKIP outside entry window (hour {now_et.hour})"
                 skipped_cutoff += 1
             else:
                 # close-through: has the latest 1m bar closed through entry?
@@ -518,8 +510,8 @@ except Exception as e:
     if sent == 0:
         log("No qualifying signals found this run.")
     log(f"Done. {sent} sent | {skipped_score} score | {skipped_taps} taps | "
-        f"{skipped_sets} no-sets | {skipped_band} band | {skipped_bracket} bracket | "
-        f"{skipped_notouch} no-through | {skipped_cutoff} window")
+    f"{skipped_sets} no-sets | {skipped_band} band | {skipped_bracket} bracket | "
+    f"{skipped_notouch} no-through | {skipped_cutoff} window | {skipped_stopbreach} past-stop")
     log("=" * 62)
 
 if __name__ == "__main__":
