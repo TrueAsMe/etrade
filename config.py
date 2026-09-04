@@ -72,7 +72,7 @@ RANGE_MULTIPLIER    = 1.01          # base range <= rolling-median * this
 MIN_ZONE_HEIGHT     = 13            # pts
 MAX_BASE_CANDLES    = 9
 STOP_BUFFER         = 8             # static fallback; live run computes dynamically
-ENTRY_SIGMA         = 1             # proximity band = this many std devs of bar range
+ENTRY_SIGMA         = 1.68             # proximity band = this many std devs of bar range
 ENTRY_SIGMA_WINDOW  = 20            # rolling window (bars) for the range std
 DATA_DAYS           = 130           # days of 1m history pulled from Databento each run
                                      # (>= TREND_WINDOW=120d so detect_zones's lookback is fully covered)
