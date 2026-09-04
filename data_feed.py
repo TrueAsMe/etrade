@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import threading
 import pandas as pd
 import databento as db
 import config
@@ -69,6 +70,64 @@ def _pull_1m(start, end=None):
     )
     return _clean_1m(store.to_df())
 
+# -- LIVE-REPLAY GAP-FILL (one-shot, for cron-triggered processes) ----
+# db.Historical is ~15min stale at the live edge; db.Live's REPLAY portion
+# serves the same recent bars over the low-latency streaming channel instead.
+# A persistent db.Live subscription doesn't fit a process that's killed and
+# restarted every cron tick — this opens Live, buffers bars, and returns as
+# soon as REPLAY_COMPLETED fires. Bounded (seconds), not held open.
+class _ReplayCollector:
+    """Buffers 1m bars from a db.Live replay. `done` is a threading.Event —
+    the callback runs on Databento's own thread, not the asyncio loop, so a
+    plain flag isn't safe to poll from the loop; the Event is."""
+
+    def __init__(self, client):
+        self._client = client
+        self.bars = []
+        self.done = threading.Event()
+
+    def __call__(self, record):
+        if isinstance(record, db.OHLCVMsg):
+            self.bars.append({
+                "datetime": record.pretty_ts_event,
+                "open": record.pretty_open, "high": record.pretty_high,
+                "low": record.pretty_low, "close": record.pretty_close,
+            })
+        elif isinstance(record, db.SystemMsg) and record.code == db.SystemCode.REPLAY_COMPLETED:
+            self._client.stop()
+            self.done.set()
+
+    def to_df(self):
+        if not self.bars:
+            return pd.DataFrame(columns=["open", "high", "low", "close"])
+        return pd.DataFrame(self.bars).set_index("datetime")
+
+
+async def _replay_collect(start_ns, timeout):
+    loop = asyncio.get_running_loop()
+    live = db.Live(key=_client())
+    collector = _ReplayCollector(live)
+    live.subscribe(dataset=DATASET, schema=SCHEMA, stype_in=STYPE_IN,
+                    symbols=[SYMBOL], start=start_ns)
+    live.add_callback(collector)
+    await loop.run_in_executor(None, live.start)
+    await loop.run_in_executor(None, collector.done.wait, timeout)
+    if not collector.done.is_set():
+        live.stop()
+        raise TimeoutError(f"Live replay did not complete within {timeout}s")
+    return collector.to_df()
+
+
+def pull_via_live_replay(start, timeout=30):
+    """Synchronous, one-shot pull of bars from `start` to now via db.Live's
+    replay channel. Near-real-time gap-fill for a short-lived cron process —
+    NOT a substitute for the bulk historical pull, which stays on Historical
+    (cheaper, and staleness doesn't matter for old bars)."""
+    start_ns = int(pd.Timestamp(start).value)
+    df = asyncio.run(_replay_collect(start_ns, timeout))
+    return _clean_1m(df, label="replay")
+
+
 def load_all_timeframes(days=config.DATA_DAYS, cache_path=None):
     """Batch snapshot for signals.py. Returns (df_1m, df_5m, df_15m, df_1h).
 
@@ -83,7 +142,13 @@ def load_all_timeframes(days=config.DATA_DAYS, cache_path=None):
         cached = pd.read_csv(cache_path)
         cached["datetime"] = pd.to_datetime(cached["datetime"], utc=True)
         cached = cached.set_index("datetime").sort_index()
-        fresh = _pull_1m(start=cached.index.max())                  # only the gap
+        gap_start = cached.index.max()
+        try:
+            fresh = pull_via_live_replay(gap_start)                  # near-real-time gap-fill
+        except Exception as e:
+            print(f"Live replay gap-fill failed ({e}) — falling back to "
+                  f"Historical (may be ~15min stale)")
+            fresh = _pull_1m(start=gap_start)
         df_1m = pd.concat([cached[["open", "high", "low", "close"]], fresh])
         df_1m = df_1m[~df_1m.index.duplicated(keep="last")].sort_index()
     else:

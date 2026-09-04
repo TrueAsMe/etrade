@@ -20,7 +20,6 @@ from datetime import datetime
 import pandas as pd
 import pytz
 import numpy as np
-from schwab_data import build_client, get_live_quote_ohlc
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -386,20 +385,13 @@ def run_signal_check():
     # Entry proximity band: keep only signals whose entry is within
     # ENTRY_SIGMA std devs of the 14-bar range, measured from current price.
     range_std     = df_15m_ny["range"].rolling(config.ENTRY_SIGMA_WINDOW).std().iloc[-1]
-    try:
-        _snap = get_live_quote_ohlc(build_client(), config.SCHWAB_QUOTE_SYMBOL)
-        current_price = float(_snap["last"] or _snap["close"])
-        _age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(_snap["datetime"]).tz_convert("UTC")).total_seconds()
-        log(f"Live price (Schwab {config.SCHWAB_QUOTE_SYMBOL}): {current_price} "
-            f"@ {_snap['datetime']} (age {int(_age)}s)")
-        if _age > 300:
-            log("  WARNING: Schwab quote >5min old — may be delayed, not real-time.")
-    except Exception as e:
-        current_price = float(df_1m_ny["close"].iloc[-1])
-        log(f"Schwab quote failed ({e}) — FELL BACK to Databento close {current_price}")
-    
-    
-    
+    # Schwab quote snapshot (get_live_quote_ohlc) was a workaround for Databento
+    # Historical's ~15min data lag before db.Live was wired up. Now that
+    # data_feed.run_live_feed() keeps df_1m current to the latest closed minute,
+    # the Databento close IS the live price — sunset, no Schwab call needed here.
+    current_price = float(df_1m_ny["close"].iloc[-1])
+    log(f"Live price (Databento): {current_price} @ {df_1m_ny.index[-1]}")
+
     entry_band    = config.ENTRY_SIGMA * range_std
     log("=" * 62)
     
