@@ -89,7 +89,7 @@ SCHWAB_QUOTE_SYMBOL = "/MYMU26"     # Micro Dow, Sep 2026
 
 # Lookbacks — note the candles, they differ:
 ZONE_LOOKBACK_DAYS  = 60       # set_curve: prev 60 x 1h bars
-TREND_WINDOW        = 120       # classify_trend: prev 120 rolling window of 15m bars
+TREND_WINDOW        = 60       # classify_trend: prev 120 rolling window of 15m bars
 ZONE_WINDOW_DAYS    = 120       # detect_zones: prev 120 candles (last 10hrs) of 15m
 
 # ── SCHEDULER ─────────────────────────────────────────────────
