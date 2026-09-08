@@ -63,7 +63,7 @@ TICKER              = "MYM"
 ACCOUNT_SIZE        = 50000
 RISK_PCT            = 0.005         # 0.5% per trade (v7 backtest value)
 TICK_VALUE          = 0.50          # MYM = $0.50/point (CME-verified; YM is $5)
-MIN_SCORE           = 4
+MIN_SCORE           = 5
 T2_CAP              = 2.5           # R:R cap on T2
 MAX_BODY_PCT        = 40            # base candle: body <= 40% of range
 MIN_BODY_PCT        = 42            # leg candle:  body >= 50% of range
