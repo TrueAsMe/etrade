@@ -221,6 +221,50 @@ def detect_zones(df, max_base_candles=config.MAX_BASE_CANDLES, min_body_pct=conf
         i = base_end + 2
     return zones
 
+# ── ZONE ALLOW/NO-TRADE GATE (curve x trend hard veto) ──────────
+# Direct table lookup from the strategy's curve/trend decision matrix.
+# zone_type is already fixed by detect_zones's candle shape (RBD = Supply,
+# DBR = Demand) — this gate never changes direction, only allow/forbid.
+# Does NOT encode the matrix's "Minimum 2:1 RR" notes — those tighten the
+# RR floor on an already-allowed trade and belong in calculate_sets, not
+# here; this table only answers "is this zone eligible for consideration
+# at all, given current curve + trend."
+_ZONE_GATE = {
+    # (zone_type, curve_bias, trend): allowed?
+    ("RBD", "RETAIL",    "DOWNTREND"): True,
+    ("RBD", "RETAIL",    "SIDEWAYS"):  True,
+    ("RBD", "RETAIL",    "UPTREND"):   True,
+    ("RBD", "NEUTRAL",   "DOWNTREND"): True,
+    ("RBD", "NEUTRAL",   "SIDEWAYS"):  True,
+    ("RBD", "NEUTRAL",   "UPTREND"):   False,
+    ("RBD", "WHOLESALE", "DOWNTREND"): True,
+    ("RBD", "WHOLESALE", "SIDEWAYS"):  False,
+    ("RBD", "WHOLESALE", "UPTREND"):   False,
+
+    ("DBR", "RETAIL",    "DOWNTREND"): False,
+    ("DBR", "RETAIL",    "SIDEWAYS"):  False,
+    ("DBR", "RETAIL",    "UPTREND"):   True,
+    ("DBR", "NEUTRAL",   "DOWNTREND"): False,
+    ("DBR", "NEUTRAL",   "SIDEWAYS"):  True,
+    ("DBR", "NEUTRAL",   "UPTREND"):   True,
+    ("DBR", "WHOLESALE", "DOWNTREND"): True,
+    ("DBR", "WHOLESALE", "SIDEWAYS"):  True,
+    ("DBR", "WHOLESALE", "UPTREND"):   True,
+}
+
+def zone_allowed(zone_type, curve_bias, trend):
+    """Hard pass/fail gate from the curve x trend decision matrix.
+    zone_type: "RBD" (Supply) or "DBR" (Demand) — from detect_zones.
+    curve_bias: "RETAIL"/"NEUTRAL"/"WHOLESALE" — from set_curve.
+    trend: "UPTREND"/"SIDEWAYS"/"DOWNTREND" — from classify_trend.
+    Raises on an unrecognized combination rather than silently allowing
+    or blocking — a new curve_bias/trend value should fail loudly, not
+    fall through to a guessed default."""
+    key = (zone_type, curve_bias, trend)
+    if key not in _ZONE_GATE:
+        raise ValueError(f"No gate entry for {key}")
+    return _ZONE_GATE[key]
+
 # Cell 2e — Strategy Functions | SCORING  (== signals.py)
 def score_zone(zone, trend, curve_bias, all_zones):
     score = 0
@@ -385,10 +429,9 @@ def run_signal_check():
     # Entry proximity band: keep only signals whose entry is within
     # ENTRY_SIGMA std devs of the 14-bar range, measured from current price.
     range_std     = df_15m_ny["range"].rolling(config.ENTRY_SIGMA_WINDOW).std().iloc[-1]
-    # Schwab quote snapshot (get_live_quote_ohlc) was a workaround for Databento
-    # Historical's ~15min data lag before db.Live was wired up. Now that
-    # data_feed.run_live_feed() keeps df_1m current to the latest closed minute,
-    # the Databento close IS the live price — sunset, no Schwab call needed here.
+    # Schwab quote snapshot was a workaround for Databento Historical's data lag
+    # before pull_via_live_replay (data_feed.py) closed most of that gap. Sunset —
+    # df_1m is now current enough that its close IS the live price.
     current_price = float(df_1m_ny["close"].iloc[-1])
     log(f"Live price (Databento): {current_price} @ {df_1m_ny.index[-1]}")
 
@@ -421,7 +464,7 @@ def run_signal_check():
     entry_window_ok = config.ENTRY_HOUR_MIN <= now_et.hour < config.CUTOFF_HOUR
 
     log("-" * 62)
-    sent = skipped_score = skipped_taps = skipped_sets = 0
+    sent = skipped_score = skipped_taps = skipped_sets = skipped_gate = 0
     skipped_band = skipped_bracket = skipped_notouch = skipped_cutoff = skipped_stopbreach = 0
 
     for zone in zones:
@@ -434,46 +477,51 @@ def run_signal_check():
         #        if zone_id in load_sent(): continue        # load_sent() from disk
         #    ...and record zone_id after a successful send. Not active now.
 
-        score = score_zone(zone, trend, curve_bias, zones)
-        sets  = calculate_sets(zone, zones, stop_buffer=stop_buffer) \
-                if score >= config.MIN_SCORE else None
-        e     = sets["entry"] if sets else None
-        dist  = abs(e - current_price) if sets else None
-
-        if score < config.MIN_SCORE:
-            disp = f"SKIP score {score} < {config.MIN_SCORE}"; skipped_score += 1
-        elif zone["touched"] >= config.MAX_TAPS:
-            disp = f"SKIP tapped {zone['touched']}x"; skipped_taps += 1
-        elif sets is None:
-            disp = "SKIP no valid sets"; skipped_sets += 1
-        elif pd.notna(range_std) and range_std > 0 and dist > entry_band:
-            disp = f"SKIP {dist:.0f} pts > {entry_band:.0f} band"; skipped_band += 1
+        if not zone_allowed(zone["type"], curve_bias, trend):
+            score = "gate"
+            disp = f"SKIP gate ({curve_bias}/{trend} forbids {zone['type']})"
+            skipped_gate += 1
         else:
-            s, t1, t2 = sets["stop"], sets["t1"], sets["t2"]
-            if zone["type"] == "DBR":
-                bracket_ok = (s < e < t1) and (t2 is None or e < t2)
+            score = score_zone(zone, trend, curve_bias, zones)
+            sets  = calculate_sets(zone, zones, stop_buffer=stop_buffer) \
+                    if score >= config.MIN_SCORE else None
+            e     = sets["entry"] if sets else None
+            dist  = abs(e - current_price) if sets else None
+
+            if score < config.MIN_SCORE:
+                disp = f"SKIP score {score} < {config.MIN_SCORE}"; skipped_score += 1
+            elif zone["touched"] >= config.MAX_TAPS:
+                disp = f"SKIP tapped {zone['touched']}x"; skipped_taps += 1
+            elif sets is None:
+                disp = "SKIP no valid sets"; skipped_sets += 1
+            elif pd.notna(range_std) and range_std > 0 and dist > entry_band:
+                disp = f"SKIP {dist:.0f} pts > {entry_band:.0f} band"; skipped_band += 1
             else:
-                bracket_ok = (t1 < e < s) and (t2 is None or t2 < e)
-            if not bracket_ok:
-                disp = f"!! MALFORMED BRACKET stop={s} entry={e} t1={t1} t2={t2}"
-                skipped_bracket += 1
-            elif (current_price <= sets["stop"]) if zone["type"] == "DBR" \
-                 else (current_price >= sets["stop"]):
-                disp = f"SKIP price {current_price} past stop {sets['stop']}"
-                skipped_stopbreach += 1
-            elif not entry_window_ok:
-                disp = f"SKIP outside entry window (hour {now_et.hour})"
-                skipped_cutoff += 1
-            else:
-                # close-through: has the latest 1m bar closed through entry?
-                through = (last_1m_close >= e) if zone["type"] == "DBR" \
-                          else (last_1m_close <= e)
-                if not through:
-                    disp = f"SKIP no close-through (1m {last_1m_close} vs entry {e})"
-                    skipped_notouch += 1
+                s, t1, t2 = sets["stop"], sets["t1"], sets["t2"]
+                if zone["type"] == "DBR":
+                    bracket_ok = (s < e < t1) and (t2 is None or e < t2)
                 else:
-                    disp = f"SEND {sets['contracts']}c risk ${sets['total_risk_$']} rr_t1 {sets['rr_t1']}"
-                    sent += 1
+                    bracket_ok = (t1 < e < s) and (t2 is None or t2 < e)
+                if not bracket_ok:
+                    disp = f"!! MALFORMED BRACKET stop={s} entry={e} t1={t1} t2={t2}"
+                    skipped_bracket += 1
+                elif (current_price <= sets["stop"]) if zone["type"] == "DBR" \
+                     else (current_price >= sets["stop"]):
+                    disp = f"SKIP price {current_price} past stop {sets['stop']}"
+                    skipped_stopbreach += 1
+                elif not entry_window_ok:
+                    disp = f"SKIP outside entry window (hour {now_et.hour})"
+                    skipped_cutoff += 1
+                else:
+                    # close-through: has the latest 1m bar closed through entry?
+                    through = (last_1m_close >= e) if zone["type"] == "DBR" \
+                              else (last_1m_close <= e)
+                    if not through:
+                        disp = f"SKIP no close-through (1m {last_1m_close} vs entry {e})"
+                        skipped_notouch += 1
+                    else:
+                        disp = f"SEND {sets['contracts']}c risk ${sets['total_risk_$']} rr_t1 {sets['rr_t1']}"
+                        sent += 1
 
         log(f"  {zone['type']} prox={zone['proximal']:<9} h={zone['base_height']:<6} "
             f"base={zone['base_count']} touch={zone['touched']} score={score:<5} "
@@ -509,7 +557,7 @@ def run_signal_check():
         log(f"  !!!! {skipped_bracket} MALFORMED BRACKET(S) — CHECK calculate_sets !!!!")
     if sent == 0:
         log("No qualifying signals found this run.")
-    log(f"Done. {sent} sent | {skipped_score} score | {skipped_taps} taps | "
+    log(f"Done. {sent} sent | {skipped_gate} gate | {skipped_score} score | {skipped_taps} taps | "
     f"{skipped_sets} no-sets | {skipped_band} band | {skipped_bracket} bracket | "
     f"{skipped_notouch} no-through | {skipped_cutoff} window | {skipped_stopbreach} past-stop")
     log("=" * 62)
