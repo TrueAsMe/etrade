@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, time as dtime
 
 import pandas as pd
 import pytz
@@ -381,8 +381,25 @@ print("detect_zones loaded ✅")
 print("score_zone loaded ✅")
 print("calculate_sets loaded ✅")
 
+# ── RUN WINDOW (DST-safe gate for the UTC Render cron) ─────────
+def in_run_window(now=None):
+    """(ok, now_et): is `now` inside RUN_WINDOW_START..RUN_WINDOW_END ET on a
+    RUN_DAYS weekday? Evaluated on the ET wall clock, so it is correct on
+    both sides of a DST change regardless of the UTC cron schedule."""
+    tz = pytz.timezone(config.TIMEZONE)
+    now_et = datetime.now(tz) if now is None else now.astimezone(tz)
+    start = dtime.fromisoformat(config.RUN_WINDOW_START)
+    end   = dtime.fromisoformat(config.RUN_WINDOW_END)
+    ok = now_et.weekday() in config.RUN_DAYS and start <= now_et.time() < end
+    return ok, now_et
+
 # ── MAIN SIGNAL CHECK ─────────────────────────
 def run_signal_check():
+    ok, now_et = in_run_window()
+    if not ok:
+        log(f"Outside run window ({now_et:%a %H:%M %Z}; window "
+            f"{config.RUN_WINDOW_START}-{config.RUN_WINDOW_END} ET Mon-Fri) — exiting.")
+        return
     log("=" * 62)
     log("Running signal check (v7 — backtest-mirrored, close-through entry)...")
 

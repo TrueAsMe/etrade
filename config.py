@@ -55,7 +55,11 @@ DATASET             = "GLBX.MDP3" # CME Globex (covers CBOT / MYM)
 SYMBOL               = "MYM.v.0"                               # volume-weighted continuous
 STYPE_IN             = "continuous"
 SCHEMA               = "ohlcv-1m"                              # 5m/15m/1h are resampled from this
-DATA_LAG             = pd.Timedelta(hours=3)    # keep Historical API end inside the available edge
+DATA_LAG             = pd.Timedelta(hours=3)    # FALLBACK only: Historical end if the dataset-range lookup fails
+# Live intraday replay stitches Historical's edge up to the last closed minute.
+LIVE_REPLAY_TIMEOUT_S    = 30                              # seconds to wait for REPLAY_COMPLETED
+LIVE_REPLAY_OVERLAP      = pd.Timedelta(minutes=5)         # replay starts this far before the Historical edge
+LIVE_REPLAY_MAX_LOOKBACK = pd.Timedelta(hours=23, minutes=45)  # Databento replay limit is 24h; keep a margin
 PX_SCALE             = 1e9                                     # Live prices are raw ints; Historical .to_df() is pre-scaled
 
 # ── STRATEGY PARAMETERS (v7 — must match strategy.py backtest) ─
@@ -92,9 +96,18 @@ ZONE_LOOKBACK_DAYS  = 60       # set_curve: prev 60 x 1h bars
 TREND_WINDOW        = 60       # classify_trend: prev 120 rolling window of 15m bars
 ZONE_WINDOW_DAYS    = 120       # detect_zones: prev 120 candles (last 10hrs) of 15m
 
-# ── SCHEDULER ─────────────────────────────────────────────────
-RUN_HOURS = [7, 8, 9, 10, 11, 12]
-TIMEZONE  = "US/Eastern"
+# ── SCHEDULER (Render Cron Job) ───────────────────────────────
+# Render evaluates cron schedules in UTC with no DST support, so the Render
+# schedule is set to cover the ET window under BOTH offsets:
+#     */4 12-20 * * 1-5
+#   EDT (UTC-4): 12:00-20:56 UTC = 08:00-16:56 ET
+#   EST (UTC-5): 12:00-20:56 UTC = 07:00-15:56 ET
+# Each run checks the ET wall clock against the window below and exits
+# BEFORE any data pull when outside it. DST changes need no redeploy.
+RUN_WINDOW_START = "08:00"           # ET, inclusive
+RUN_WINDOW_END   = "16:00"           # ET, exclusive
+RUN_DAYS         = (0, 1, 2, 3, 4)   # Mon-Fri (datetime.weekday())
+TIMEZONE         = "US/Eastern"      # DST-aware (pytz)
 
 # ── SECRETS (loaded from environment — never hard-coded) ──────
 EMAIL_SENDER   = os.getenv("EMAIL_SENDER", "")
