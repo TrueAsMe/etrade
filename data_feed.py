@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import asyncio
 import threading
+import time
 import pandas as pd
 import databento as db
 import config
@@ -19,7 +20,20 @@ STYPE_IN = config.STYPE_IN                            # explicit contract symbol
 #STYPE_IN = "continuous"
 SCHEMA   = config.SCHEMA                               # 5m/15m/1h are resampled from this
 DATA_LAG = config.DATA_LAG   # keep Historical end inside the available edge
-PX_SCALE = config.PX_SCALE   
+PX_SCALE = config.PX_SCALE
+REPLAY_TIMEOUT_S      = config.LIVE_REPLAY_TIMEOUT_S
+REPLAY_OVERLAP        = config.LIVE_REPLAY_OVERLAP
+REPLAY_MAX_LOOKBACK   = config.LIVE_REPLAY_MAX_LOOKBACK
+
+
+class DataFeedError(RuntimeError):
+    """The 1m series could not be brought up to the live edge. Callers must
+    treat this as fatal for the run (fail closed) — never fall back to
+    Historical-only bars, which lag real time."""
+
+
+class ReplayTimeout(DataFeedError, TimeoutError):
+    """Live replay did not report REPLAY_COMPLETED within the timeout."""
 
 # -- CREDENTIALS -----------------------------------------------
 def _client():
@@ -29,13 +43,17 @@ def _client():
     return key
 
 # -- CLEANING / RESAMPLE (shared by Historical + Live) ---------
+def _empty_1m():
+    return pd.DataFrame(columns=["open", "high", "low", "close"], dtype=float,
+                        index=pd.DatetimeIndex([], tz="UTC", name="datetime"))
+
 def _clean_1m(df, label="1m"):
     """Raw Databento ohlcv-1m -> tz-aware UTC 'datetime' index, spreads & dupes
     removed, OHLC only — the SAME cleaning the backtest CSV got, so live and
     backtest bars are treated identically."""
     if df.empty:
         print(f"{label:6} |      0 bars | (no data returned)")
-        return pd.DataFrame(columns=["open", "high", "low", "close"])
+        return _empty_1m()
     df = df.copy()
     df.index = pd.to_datetime(df.index, utc=True)
     df.index.name = "datetime"
@@ -58,103 +76,171 @@ def resample_ohlc(df, rule):
     ).dropna()
 
 # -- HISTORICAL PULL -------------------------------------------
+def _historical_end(now=None):
+    """Exclusive end for Historical pulls: the dataset's published edge for
+    SCHEMA (metadata.get_dataset_range), floored to the minute so every bar
+    returned has closed. If the metadata call fails, fall back to
+    now - DATA_LAG; the Live replay stitch covers whatever gap remains."""
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    try:
+        rng = db.Historical(_client()).metadata.get_dataset_range(dataset=DATASET)
+        per_schema = (rng.get("schema") or {}).get(SCHEMA) or {}
+        edge = pd.Timestamp(per_schema.get("end") or rng["end"])
+        edge = edge.tz_localize("UTC") if edge.tzinfo is None else edge.tz_convert("UTC")
+    except Exception as e:
+        print(f"Historical edge lookup failed ({type(e).__name__}: {e}) — "
+              f"falling back to now - {DATA_LAG}")
+        edge = now - DATA_LAG
+    return min(edge, now).floor("min")
+
+
 def _safe_end(end=None):
-    """End-time capped safely in the past (Historical API rejects the recent edge)."""
-    return end if end is not None else pd.Timestamp.now(tz="UTC") - DATA_LAG
+    """End-time for Historical pulls (explicit `end`, else the published edge)."""
+    return end if end is not None else _historical_end()
+
 
 def _pull_1m(start, end=None):
     """Low-level Databento ohlcv-1m pull -> cleaned 1m DataFrame."""
+    end = _safe_end(end)
+    if pd.Timestamp(start) >= pd.Timestamp(end):
+        return _empty_1m()
     store = db.Historical(_client()).timeseries.get_range(
         dataset=DATASET, symbols=[SYMBOL], schema=SCHEMA, stype_in=STYPE_IN,
-        start=start, end=_safe_end(end),
+        start=start, end=end,
     )
     return _clean_1m(store.to_df())
 
 # -- LIVE-REPLAY GAP-FILL (one-shot, for cron-triggered processes) ----
-# db.Historical is ~15min stale at the live edge; db.Live's REPLAY portion
-# serves the same recent bars over the low-latency streaming channel instead.
-# A persistent db.Live subscription doesn't fit a process that's killed and
-# restarted every cron tick — this opens Live, buffers bars, and returns as
-# soon as REPLAY_COMPLETED fires. Bounded (seconds), not held open.
+# Historical trails the live edge; db.Live's intraday REPLAY serves the same
+# 1m bars (verified identical on overlap) up to the last closed minute. This
+# opens Live, buffers bars until REPLAY_COMPLETED, then closes — bounded
+# (seconds), never held open. Replay reaches back at most 24h.
 class _ReplayCollector:
-    """Buffers 1m bars from a db.Live replay. `done` is a threading.Event —
-    the callback runs on Databento's own thread, not the asyncio loop, so a
-    plain flag isn't safe to poll from the loop; the Event is."""
+    """Record callback for a one-shot replay. Runs on Databento's I/O thread;
+    `done` is a threading.Event so the caller can wait on it safely. Gateway
+    ErrorMsg and callback exceptions end the wait immediately instead of
+    letting it run to the timeout."""
 
-    def __init__(self, client):
-        self._client = client
+    def __init__(self):
         self.bars = []
+        self.errors = []
         self.done = threading.Event()
 
     def __call__(self, record):
         if isinstance(record, db.OHLCVMsg):
-            self.bars.append({
-                "datetime": record.pretty_ts_event,
-                "open": record.pretty_open, "high": record.pretty_high,
-                "low": record.pretty_low, "close": record.pretty_close,
-            })
-        elif isinstance(record, db.SystemMsg) and record.code == db.SystemCode.REPLAY_COMPLETED:
-            self._client.stop()
+            self.bars.append((record.ts_event, record.open, record.high,
+                              record.low, record.close))
+        elif isinstance(record, db.ErrorMsg):
+            self.errors.append(f"gateway error {record.code}: {record.err}")
             self.done.set()
+        elif isinstance(record, db.SystemMsg) and record.code == db.SystemCode.REPLAY_COMPLETED:
+            self.done.set()
+
+    def on_exception(self, exc):
+        self.errors.append(f"record callback raised {type(exc).__name__}: {exc}")
+        self.done.set()
 
     def to_df(self):
         if not self.bars:
-            return pd.DataFrame(columns=["open", "high", "low", "close"])
-        return pd.DataFrame(self.bars).set_index("datetime")
+            return _empty_1m()
+        df = pd.DataFrame(self.bars, columns=["ts_event", "open", "high", "low", "close"])
+        df.index = pd.DatetimeIndex(pd.to_datetime(df.pop("ts_event"), unit="ns", utc=True),
+                                    name="datetime")
+        return df.astype(float) / PX_SCALE      # Live prices are fixed-point ints
 
 
-async def _replay_collect(start_ns, timeout):
-    loop = asyncio.get_running_loop()
-    live = db.Live(key=_client())
-    collector = _ReplayCollector(live)
-    live.subscribe(dataset=DATASET, schema=SCHEMA, stype_in=STYPE_IN,
-                    symbols=[SYMBOL], start=start_ns)
-    live.add_callback(collector)
-    await loop.run_in_executor(None, live.start)
-    await loop.run_in_executor(None, collector.done.wait, timeout)
-    if not collector.done.is_set():
+def _close_live(live):
+    """Best-effort shutdown; never masks the caller's own outcome."""
+    try:
         live.stop()
-        raise TimeoutError(f"Live replay did not complete within {timeout}s")
-    return collector.to_df()
+        live.block_for_close(timeout=5)
+    except Exception:
+        try:
+            live.terminate()
+        except Exception:
+            pass
 
 
-def pull_via_live_replay(start, timeout=30):
-    """Synchronous, one-shot pull of bars from `start` to now via db.Live's
-    replay channel. Near-real-time gap-fill for a short-lived cron process —
-    NOT a substitute for the bulk historical pull, which stays on Historical
-    (cheaper, and staleness doesn't matter for old bars)."""
-    start_ns = int(pd.Timestamp(start).value)
-    df = asyncio.run(_replay_collect(start_ns, timeout))
-    return _clean_1m(df, label="replay")
+def pull_via_live_replay(start, timeout=REPLAY_TIMEOUT_S, now=None):
+    """Synchronous one-shot pull of closed 1m bars from `start` (inclusive) to
+    now via db.Live intraday replay. Raises DataFeedError on any failure —
+    gateway error, connection closed early, timeout, or `start` beyond the
+    replay window — so callers fail closed rather than run on lagged data."""
+    start = pd.Timestamp(start)
+    start = start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC")
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if start < now - REPLAY_MAX_LOOKBACK:
+        raise DataFeedError(
+            f"Live replay start {start} is older than the intraday-replay window "
+            f"({REPLAY_MAX_LOOKBACK}); Historical edge is too stale to stitch.")
+
+    live = db.Live(key=_client())
+    collector = _ReplayCollector()
+    live.add_callback(collector, exception_callback=collector.on_exception)
+    try:
+        live.subscribe(dataset=DATASET, schema=SCHEMA, stype_in=STYPE_IN,
+                       symbols=[SYMBOL], start=start)
+        live.start()
+        deadline = time.monotonic() + timeout
+        while not collector.done.wait(0.1):
+            if not live.is_connected() or time.monotonic() >= deadline:
+                break
+    except DataFeedError:
+        raise
+    except Exception as e:
+        raise DataFeedError(f"Live replay failed: {type(e).__name__}: {e}") from e
+    finally:
+        _close_live(live)
+
+    if collector.errors:
+        raise DataFeedError("Live replay failed: " + "; ".join(collector.errors))
+    if not collector.done.is_set():
+        if time.monotonic() >= deadline:
+            raise ReplayTimeout(f"Live replay did not complete within {timeout}s")
+        raise DataFeedError("Live session closed before REPLAY_COMPLETED")
+    return _clean_1m(collector.to_df(), label="replay")
 
 
-def load_all_timeframes(days=config.DATA_DAYS, cache_path=None):
+def load_all_timeframes(days=config.DATA_DAYS, cache_path=None, live_fill=True, now=None):
     """Batch snapshot for signals.py. Returns (df_1m, df_5m, df_15m, df_1h).
 
-    cache_path=None : fresh pull of the full window (simplest).
-    cache_path set  : incremental — read cache, pull only the gap since the last
-                      cached minute, append, dedupe, trim, rewrite. Saves credits.
-                      Use a DEDICATED cache file, not the backtest base CSV.
-    """
-    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
+    Bars come from Historical up to its published edge, then Live intraday
+    replay from (edge - REPLAY_OVERLAP) to now. On overlap the Historical bar
+    wins. If the replay fails this raises DataFeedError — there is no
+    Historical-only fallback, because those bars trail real time.
 
+    cache_path=None : fresh Historical pull of the full window.
+    cache_path set  : incremental — read cache, pull Historical only after the
+                      last cached minute, stitch, trim, rewrite.
+    live_fill=False : Historical only (research/backtest use; never for live).
+    """
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    cutoff = now - pd.Timedelta(days=days)
+
+    base, hist_start = _empty_1m(), cutoff
     if cache_path and os.path.exists(cache_path):
         cached = pd.read_csv(cache_path)
         cached["datetime"] = pd.to_datetime(cached["datetime"], utc=True)
-        cached = cached.set_index("datetime").sort_index()
-        gap_start = cached.index.max()
-        try:
-            fresh = pull_via_live_replay(gap_start)                  # near-real-time gap-fill
-        except Exception as e:
-            print(f"Live replay gap-fill failed ({e}) — falling back to "
-                  f"Historical (may be ~15min stale)")
-            fresh = _pull_1m(start=gap_start)
-        df_1m = pd.concat([cached[["open", "high", "low", "close"]], fresh])
-        df_1m = df_1m[~df_1m.index.duplicated(keep="last")].sort_index()
-    else:
-        df_1m = _pull_1m(start=cutoff)
+        base = cached.set_index("datetime").sort_index()[["open", "high", "low", "close"]]
+        if not base.empty:
+            hist_start = max(cutoff, base.index.max() + pd.Timedelta(minutes=1))
 
+    hist_end = _historical_end(now)
+    hist = _pull_1m(start=hist_start, end=hist_end)
+
+    parts = [base]
+    if live_fill:
+        replay_start = hist_end - REPLAY_OVERLAP
+        replay = pull_via_live_replay(replay_start, now=now)       # raises -> fail closed
+        parts.append(replay)
+    parts.append(hist)                                              # last wins on overlap
+    parts = [p for p in parts if not p.empty]
+    df_1m = pd.concat(parts) if parts else _empty_1m()
+    df_1m = df_1m[~df_1m.index.duplicated(keep="last")].sort_index()
     df_1m = df_1m[df_1m.index >= cutoff]                            # trim to rolling window
+
+    last = df_1m.index.max() if not df_1m.empty else None
+    print(f"stitch | historical edge {hist_end} | live_fill={live_fill} | last 1m bar {last}")
     if cache_path:
         df_1m.reset_index().to_csv(cache_path, index=False)
 

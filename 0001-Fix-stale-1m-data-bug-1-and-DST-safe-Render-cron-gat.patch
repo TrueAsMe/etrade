@@ -1,0 +1,850 @@
+From b1917f8142d5cb066b63ec340988e114c710bb6c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 3 Nov 2026 19:22:30 -0500
+Subject: [PATCH] Fix stale 1m data (bug #1) and DST-safe Render cron gate (bug
+ #2)
+
+Bug #1: load_all_timeframes(cache_path=None) - the production path - never
+ran the Live replay, so df_1m ended at now - DATA_LAG (3h) and signals.py
+traded on a 3-hour-old "live" price with TEST_MODE=False.
+
+- Historical pulls end at the dataset's published edge for ohlcv-1m
+  (metadata.get_dataset_range), floored to the minute; DATA_LAG is now
+  only the fallback if that lookup fails.
+- Live intraday replay always runs, from (edge - 5 min) to the last closed
+  minute; Historical wins on overlap.
+- Fail closed: gateway ErrorMsg, early disconnect, timeout, callback
+  exception, or a replay start outside the 24h window raise DataFeedError
+  (ReplayTimeout also subclasses TimeoutError). run_signal_check already
+  aborts the run on a data-load exception, so no orders go out.
+- Collector no longer waits out the full timeout on gateway errors; the
+  session is always stopped and closed.
+- live_fill=False keeps a Historical-only path for research.
+
+Bug #2: Render evaluates cron in UTC with no DST support. New schedule
+*/4 12-20 * * 1-5 covers 08:00-16:00 ET under both offsets; run_signal_check
+checks the ET wall clock (RUN_WINDOW_START/END, RUN_DAYS) and exits before
+any data pull when outside it. Replaces unused RUN_HOURS.
+
+Tests: 54 (fake network layer, real DBN record classes). The production
+call site test fails on the old code with a last bar 3h stale.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GbXpWux8DHVYmDU2uwzwVi
+---
+ config.py                    |  21 +++-
+ data_feed.py                 | 208 +++++++++++++++++++++++++----------
+ signals.py                   |  19 +++-
+ test/conftest.py             | 162 +++++++++++++++++++++++++++
+ test/test_data_feed.py       | 171 ++++++++++++++++++++++++++++
+ test/test_signals_runtime.py |  89 +++++++++++++++
+ 6 files changed, 604 insertions(+), 66 deletions(-)
+ create mode 100644 test/conftest.py
+ create mode 100644 test/test_data_feed.py
+ create mode 100644 test/test_signals_runtime.py
+
+diff --git a/config.py b/config.py
+index fe0008e..c5bdc03 100644
+--- a/config.py
++++ b/config.py
+@@ -55,7 +55,11 @@ DATASET             = "GLBX.MDP3" # CME Globex (covers CBOT / MYM)
+ SYMBOL               = "MYM.v.0"                               # volume-weighted continuous
+ STYPE_IN             = "continuous"
+ SCHEMA               = "ohlcv-1m"                              # 5m/15m/1h are resampled from this
+-DATA_LAG             = pd.Timedelta(hours=3)    # keep Historical API end inside the available edge
++DATA_LAG             = pd.Timedelta(hours=3)    # FALLBACK only: Historical end if the dataset-range lookup fails
++# Live intraday replay stitches Historical's edge up to the last closed minute.
++LIVE_REPLAY_TIMEOUT_S    = 30                              # seconds to wait for REPLAY_COMPLETED
++LIVE_REPLAY_OVERLAP      = pd.Timedelta(minutes=5)         # replay starts this far before the Historical edge
++LIVE_REPLAY_MAX_LOOKBACK = pd.Timedelta(hours=23, minutes=45)  # Databento replay limit is 24h; keep a margin
+ PX_SCALE             = 1e9                                     # Live prices are raw ints; Historical .to_df() is pre-scaled
+ 
+ # ── STRATEGY PARAMETERS (v7 — must match strategy.py backtest) ─
+@@ -92,9 +96,18 @@ ZONE_LOOKBACK_DAYS  = 60       # set_curve: prev 60 x 1h bars
+ TREND_WINDOW        = 60       # classify_trend: prev 120 rolling window of 15m bars
+ ZONE_WINDOW_DAYS    = 120       # detect_zones: prev 120 candles (last 10hrs) of 15m
+ 
+-# ── SCHEDULER ─────────────────────────────────────────────────
+-RUN_HOURS = [7, 8, 9, 10, 11, 12]
+-TIMEZONE  = "US/Eastern"
++# ── SCHEDULER (Render Cron Job) ───────────────────────────────
++# Render evaluates cron schedules in UTC with no DST support, so the Render
++# schedule is set to cover the ET window under BOTH offsets:
++#     */4 12-20 * * 1-5
++#   EDT (UTC-4): 12:00-20:56 UTC = 08:00-16:56 ET
++#   EST (UTC-5): 12:00-20:56 UTC = 07:00-15:56 ET
++# Each run checks the ET wall clock against the window below and exits
++# BEFORE any data pull when outside it. DST changes need no redeploy.
++RUN_WINDOW_START = "08:00"           # ET, inclusive
++RUN_WINDOW_END   = "16:00"           # ET, exclusive
++RUN_DAYS         = (0, 1, 2, 3, 4)   # Mon-Fri (datetime.weekday())
++TIMEZONE         = "US/Eastern"      # DST-aware (pytz)
+ 
+ # ── SECRETS (loaded from environment — never hard-coded) ──────
+ EMAIL_SENDER   = os.getenv("EMAIL_SENDER", "")
+diff --git a/data_feed.py b/data_feed.py
+index f345beb..e376e9f 100644
+--- a/data_feed.py
++++ b/data_feed.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import os
+ import asyncio
+ import threading
++import time
+ import pandas as pd
+ import databento as db
+ import config
+@@ -19,7 +20,20 @@ STYPE_IN = config.STYPE_IN                            # explicit contract symbol
+ #STYPE_IN = "continuous"
+ SCHEMA   = config.SCHEMA                               # 5m/15m/1h are resampled from this
+ DATA_LAG = config.DATA_LAG   # keep Historical end inside the available edge
+-PX_SCALE = config.PX_SCALE   
++PX_SCALE = config.PX_SCALE
++REPLAY_TIMEOUT_S      = config.LIVE_REPLAY_TIMEOUT_S
++REPLAY_OVERLAP        = config.LIVE_REPLAY_OVERLAP
++REPLAY_MAX_LOOKBACK   = config.LIVE_REPLAY_MAX_LOOKBACK
++
++
++class DataFeedError(RuntimeError):
++    """The 1m series could not be brought up to the live edge. Callers must
++    treat this as fatal for the run (fail closed) — never fall back to
++    Historical-only bars, which lag real time."""
++
++
++class ReplayTimeout(DataFeedError, TimeoutError):
++    """Live replay did not report REPLAY_COMPLETED within the timeout."""
+ 
+ # -- CREDENTIALS -----------------------------------------------
+ def _client():
+@@ -29,13 +43,17 @@ def _client():
+     return key
+ 
+ # -- CLEANING / RESAMPLE (shared by Historical + Live) ---------
++def _empty_1m():
++    return pd.DataFrame(columns=["open", "high", "low", "close"], dtype=float,
++                        index=pd.DatetimeIndex([], tz="UTC", name="datetime"))
++
+ def _clean_1m(df, label="1m"):
+     """Raw Databento ohlcv-1m -> tz-aware UTC 'datetime' index, spreads & dupes
+     removed, OHLC only — the SAME cleaning the backtest CSV got, so live and
+     backtest bars are treated identically."""
+     if df.empty:
+         print(f"{label:6} |      0 bars | (no data returned)")
+-        return pd.DataFrame(columns=["open", "high", "low", "close"])
++        return _empty_1m()
+     df = df.copy()
+     df.index = pd.to_datetime(df.index, utc=True)
+     df.index.name = "datetime"
+@@ -58,103 +76,171 @@ def resample_ohlc(df, rule):
+     ).dropna()
+ 
+ # -- HISTORICAL PULL -------------------------------------------
++def _historical_end(now=None):
++    """Exclusive end for Historical pulls: the dataset's published edge for
++    SCHEMA (metadata.get_dataset_range), floored to the minute so every bar
++    returned has closed. If the metadata call fails, fall back to
++    now - DATA_LAG; the Live replay stitch covers whatever gap remains."""
++    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
++    try:
++        rng = db.Historical(_client()).metadata.get_dataset_range(dataset=DATASET)
++        per_schema = (rng.get("schema") or {}).get(SCHEMA) or {}
++        edge = pd.Timestamp(per_schema.get("end") or rng["end"])
++        edge = edge.tz_localize("UTC") if edge.tzinfo is None else edge.tz_convert("UTC")
++    except Exception as e:
++        print(f"Historical edge lookup failed ({type(e).__name__}: {e}) — "
++              f"falling back to now - {DATA_LAG}")
++        edge = now - DATA_LAG
++    return min(edge, now).floor("min")
++
++
+ def _safe_end(end=None):
+-    """End-time capped safely in the past (Historical API rejects the recent edge)."""
+-    return end if end is not None else pd.Timestamp.now(tz="UTC") - DATA_LAG
++    """End-time for Historical pulls (explicit `end`, else the published edge)."""
++    return end if end is not None else _historical_end()
++
+ 
+ def _pull_1m(start, end=None):
+     """Low-level Databento ohlcv-1m pull -> cleaned 1m DataFrame."""
++    end = _safe_end(end)
++    if pd.Timestamp(start) >= pd.Timestamp(end):
++        return _empty_1m()
+     store = db.Historical(_client()).timeseries.get_range(
+         dataset=DATASET, symbols=[SYMBOL], schema=SCHEMA, stype_in=STYPE_IN,
+-        start=start, end=_safe_end(end),
++        start=start, end=end,
+     )
+     return _clean_1m(store.to_df())
+ 
+ # -- LIVE-REPLAY GAP-FILL (one-shot, for cron-triggered processes) ----
+-# db.Historical is ~15min stale at the live edge; db.Live's REPLAY portion
+-# serves the same recent bars over the low-latency streaming channel instead.
+-# A persistent db.Live subscription doesn't fit a process that's killed and
+-# restarted every cron tick — this opens Live, buffers bars, and returns as
+-# soon as REPLAY_COMPLETED fires. Bounded (seconds), not held open.
++# Historical trails the live edge; db.Live's intraday REPLAY serves the same
++# 1m bars (verified identical on overlap) up to the last closed minute. This
++# opens Live, buffers bars until REPLAY_COMPLETED, then closes — bounded
++# (seconds), never held open. Replay reaches back at most 24h.
+ class _ReplayCollector:
+-    """Buffers 1m bars from a db.Live replay. `done` is a threading.Event —
+-    the callback runs on Databento's own thread, not the asyncio loop, so a
+-    plain flag isn't safe to poll from the loop; the Event is."""
++    """Record callback for a one-shot replay. Runs on Databento's I/O thread;
++    `done` is a threading.Event so the caller can wait on it safely. Gateway
++    ErrorMsg and callback exceptions end the wait immediately instead of
++    letting it run to the timeout."""
+ 
+-    def __init__(self, client):
+-        self._client = client
++    def __init__(self):
+         self.bars = []
++        self.errors = []
+         self.done = threading.Event()
+ 
+     def __call__(self, record):
+         if isinstance(record, db.OHLCVMsg):
+-            self.bars.append({
+-                "datetime": record.pretty_ts_event,
+-                "open": record.pretty_open, "high": record.pretty_high,
+-                "low": record.pretty_low, "close": record.pretty_close,
+-            })
++            self.bars.append((record.ts_event, record.open, record.high,
++                              record.low, record.close))
++        elif isinstance(record, db.ErrorMsg):
++            self.errors.append(f"gateway error {record.code}: {record.err}")
++            self.done.set()
+         elif isinstance(record, db.SystemMsg) and record.code == db.SystemCode.REPLAY_COMPLETED:
+-            self._client.stop()
+             self.done.set()
+ 
++    def on_exception(self, exc):
++        self.errors.append(f"record callback raised {type(exc).__name__}: {exc}")
++        self.done.set()
++
+     def to_df(self):
+         if not self.bars:
+-            return pd.DataFrame(columns=["open", "high", "low", "close"])
+-        return pd.DataFrame(self.bars).set_index("datetime")
++            return _empty_1m()
++        df = pd.DataFrame(self.bars, columns=["ts_event", "open", "high", "low", "close"])
++        df.index = pd.DatetimeIndex(pd.to_datetime(df.pop("ts_event"), unit="ns", utc=True),
++                                    name="datetime")
++        return df.astype(float) / PX_SCALE      # Live prices are fixed-point ints
+ 
+ 
+-async def _replay_collect(start_ns, timeout):
+-    loop = asyncio.get_running_loop()
+-    live = db.Live(key=_client())
+-    collector = _ReplayCollector(live)
+-    live.subscribe(dataset=DATASET, schema=SCHEMA, stype_in=STYPE_IN,
+-                    symbols=[SYMBOL], start=start_ns)
+-    live.add_callback(collector)
+-    await loop.run_in_executor(None, live.start)
+-    await loop.run_in_executor(None, collector.done.wait, timeout)
+-    if not collector.done.is_set():
++def _close_live(live):
++    """Best-effort shutdown; never masks the caller's own outcome."""
++    try:
+         live.stop()
+-        raise TimeoutError(f"Live replay did not complete within {timeout}s")
+-    return collector.to_df()
++        live.block_for_close(timeout=5)
++    except Exception:
++        try:
++            live.terminate()
++        except Exception:
++            pass
+ 
+ 
+-def pull_via_live_replay(start, timeout=30):
+-    """Synchronous, one-shot pull of bars from `start` to now via db.Live's
+-    replay channel. Near-real-time gap-fill for a short-lived cron process —
+-    NOT a substitute for the bulk historical pull, which stays on Historical
+-    (cheaper, and staleness doesn't matter for old bars)."""
+-    start_ns = int(pd.Timestamp(start).value)
+-    df = asyncio.run(_replay_collect(start_ns, timeout))
+-    return _clean_1m(df, label="replay")
++def pull_via_live_replay(start, timeout=REPLAY_TIMEOUT_S, now=None):
++    """Synchronous one-shot pull of closed 1m bars from `start` (inclusive) to
++    now via db.Live intraday replay. Raises DataFeedError on any failure —
++    gateway error, connection closed early, timeout, or `start` beyond the
++    replay window — so callers fail closed rather than run on lagged data."""
++    start = pd.Timestamp(start)
++    start = start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC")
++    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
++    if start < now - REPLAY_MAX_LOOKBACK:
++        raise DataFeedError(
++            f"Live replay start {start} is older than the intraday-replay window "
++            f"({REPLAY_MAX_LOOKBACK}); Historical edge is too stale to stitch.")
+ 
++    live = db.Live(key=_client())
++    collector = _ReplayCollector()
++    live.add_callback(collector, exception_callback=collector.on_exception)
++    try:
++        live.subscribe(dataset=DATASET, schema=SCHEMA, stype_in=STYPE_IN,
++                       symbols=[SYMBOL], start=start)
++        live.start()
++        deadline = time.monotonic() + timeout
++        while not collector.done.wait(0.1):
++            if not live.is_connected() or time.monotonic() >= deadline:
++                break
++    except DataFeedError:
++        raise
++    except Exception as e:
++        raise DataFeedError(f"Live replay failed: {type(e).__name__}: {e}") from e
++    finally:
++        _close_live(live)
+ 
+-def load_all_timeframes(days=config.DATA_DAYS, cache_path=None):
++    if collector.errors:
++        raise DataFeedError("Live replay failed: " + "; ".join(collector.errors))
++    if not collector.done.is_set():
++        if time.monotonic() >= deadline:
++            raise ReplayTimeout(f"Live replay did not complete within {timeout}s")
++        raise DataFeedError("Live session closed before REPLAY_COMPLETED")
++    return _clean_1m(collector.to_df(), label="replay")
++
++
++def load_all_timeframes(days=config.DATA_DAYS, cache_path=None, live_fill=True, now=None):
+     """Batch snapshot for signals.py. Returns (df_1m, df_5m, df_15m, df_1h).
+ 
+-    cache_path=None : fresh pull of the full window (simplest).
+-    cache_path set  : incremental — read cache, pull only the gap since the last
+-                      cached minute, append, dedupe, trim, rewrite. Saves credits.
+-                      Use a DEDICATED cache file, not the backtest base CSV.
++    Bars come from Historical up to its published edge, then Live intraday
++    replay from (edge - REPLAY_OVERLAP) to now. On overlap the Historical bar
++    wins. If the replay fails this raises DataFeedError — there is no
++    Historical-only fallback, because those bars trail real time.
++
++    cache_path=None : fresh Historical pull of the full window.
++    cache_path set  : incremental — read cache, pull Historical only after the
++                      last cached minute, stitch, trim, rewrite.
++    live_fill=False : Historical only (research/backtest use; never for live).
+     """
+-    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
++    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
++    cutoff = now - pd.Timedelta(days=days)
+ 
++    base, hist_start = _empty_1m(), cutoff
+     if cache_path and os.path.exists(cache_path):
+         cached = pd.read_csv(cache_path)
+         cached["datetime"] = pd.to_datetime(cached["datetime"], utc=True)
+-        cached = cached.set_index("datetime").sort_index()
+-        gap_start = cached.index.max()
+-        try:
+-            fresh = pull_via_live_replay(gap_start)                  # near-real-time gap-fill
+-        except Exception as e:
+-            print(f"Live replay gap-fill failed ({e}) — falling back to "
+-                  f"Historical (may be ~15min stale)")
+-            fresh = _pull_1m(start=gap_start)
+-        df_1m = pd.concat([cached[["open", "high", "low", "close"]], fresh])
+-        df_1m = df_1m[~df_1m.index.duplicated(keep="last")].sort_index()
+-    else:
+-        df_1m = _pull_1m(start=cutoff)
++        base = cached.set_index("datetime").sort_index()[["open", "high", "low", "close"]]
++        if not base.empty:
++            hist_start = max(cutoff, base.index.max() + pd.Timedelta(minutes=1))
++
++    hist_end = _historical_end(now)
++    hist = _pull_1m(start=hist_start, end=hist_end)
+ 
++    parts = [base]
++    if live_fill:
++        replay_start = hist_end - REPLAY_OVERLAP
++        replay = pull_via_live_replay(replay_start, now=now)       # raises -> fail closed
++        parts.append(replay)
++    parts.append(hist)                                              # last wins on overlap
++    parts = [p for p in parts if not p.empty]
++    df_1m = pd.concat(parts) if parts else _empty_1m()
++    df_1m = df_1m[~df_1m.index.duplicated(keep="last")].sort_index()
+     df_1m = df_1m[df_1m.index >= cutoff]                            # trim to rolling window
++
++    last = df_1m.index.max() if not df_1m.empty else None
++    print(f"stitch | historical edge {hist_end} | live_fill={live_fill} | last 1m bar {last}")
+     if cache_path:
+         df_1m.reset_index().to_csv(cache_path, index=False)
+ 
+diff --git a/signals.py b/signals.py
+index d2c8f64..223ba30 100644
+--- a/signals.py
++++ b/signals.py
+@@ -15,7 +15,7 @@ from __future__ import annotations
+ 
+ import os
+ import sys
+-from datetime import datetime
++from datetime import datetime, time as dtime
+ 
+ import pandas as pd
+ import pytz
+@@ -381,8 +381,25 @@ print("detect_zones loaded ✅")
+ print("score_zone loaded ✅")
+ print("calculate_sets loaded ✅")
+ 
++# ── RUN WINDOW (DST-safe gate for the UTC Render cron) ─────────
++def in_run_window(now=None):
++    """(ok, now_et): is `now` inside RUN_WINDOW_START..RUN_WINDOW_END ET on a
++    RUN_DAYS weekday? Evaluated on the ET wall clock, so it is correct on
++    both sides of a DST change regardless of the UTC cron schedule."""
++    tz = pytz.timezone(config.TIMEZONE)
++    now_et = datetime.now(tz) if now is None else now.astimezone(tz)
++    start = dtime.fromisoformat(config.RUN_WINDOW_START)
++    end   = dtime.fromisoformat(config.RUN_WINDOW_END)
++    ok = now_et.weekday() in config.RUN_DAYS and start <= now_et.time() < end
++    return ok, now_et
++
+ # ── MAIN SIGNAL CHECK ─────────────────────────
+ def run_signal_check():
++    ok, now_et = in_run_window()
++    if not ok:
++        log(f"Outside run window ({now_et:%a %H:%M %Z}; window "
++            f"{config.RUN_WINDOW_START}-{config.RUN_WINDOW_END} ET Mon-Fri) — exiting.")
++        return
+     log("=" * 62)
+     log("Running signal check (v7 — backtest-mirrored, close-through entry)...")
+ 
+diff --git a/test/conftest.py b/test/conftest.py
+new file mode 100644
+index 0000000..7f607e0
+--- /dev/null
++++ b/test/conftest.py
+@@ -0,0 +1,162 @@
++"""Shared fixtures: fake Databento Historical + Live network layers.
++
++Records are REAL databento_dbn classes (OHLCVMsg / SystemMsg / ErrorMsg) so
++data_feed's isinstance dispatch and fixed-point price scaling are exercised
++exactly as in production. Only the sockets/HTTP are replaced.
++
++The fake market trades every minute and a bar's prices are a pure function of
++its open time, so Historical and Live agree on overlap (as verified against
++the real feeds in backtest/dbDatafeed-1.ipynb) unless a test says otherwise.
++"""
++import os
++import sys
++import tempfile
++import threading
++
++import pandas as pd
++import pytest
++
++_TMP = tempfile.mkdtemp(prefix="etrade_test_")
++os.environ["MYM_BASE"] = _TMP
++os.environ["DATABENTO_API_KEY"] = "test-key"
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++import databento as db  # noqa: E402
++
++PX = 1_000_000_000
++
++
++def bar_price(ts: pd.Timestamp) -> float:
++    """Deterministic price for a bar opened at `ts` (quarter-point grid)."""
++    return 44000.0 + (int(ts.value // 60_000_000_000) % 400) * 0.25
++
++
++def ohlcv(ts: pd.Timestamp, bump: float = 0.0) -> db.OHLCVMsg:
++    p = bar_price(ts) + bump
++    return db.OHLCVMsg(rtype=db.RType.OHLCV_1M, publisher_id=1, instrument_id=42,
++                       ts_event=int(ts.value), open=int(p * PX), high=int((p + 1) * PX),
++                       low=int((p - 1) * PX), close=int((p + 0.5) * PX), volume=10)
++
++
++class FakeMarket:
++    """Knobs a test can turn. `now` = wall clock the fakes believe in."""
++
++    def __init__(self):
++        self.now = pd.Timestamp.now(tz="UTC")
++        self.hist_lag = pd.Timedelta(minutes=12)   # Historical edge = now - lag
++        self.metadata_raises = False
++        self.live_mode = "ok"                      # ok | error | hang | disconnect
++        self.live_bump = 0.0                       # price offset on Live bars
++        self.hist_calls, self.live_sessions = [], []
++
++    @property
++    def edge(self):
++        return self.now - self.hist_lag
++
++
++class _Store:
++    def __init__(self, df):
++        self._df = df
++
++    def to_df(self):
++        return self._df
++
++
++def make_historical(market):
++    class _Meta:
++        def get_dataset_range(self, dataset):
++            if market.metadata_raises:
++                raise RuntimeError("metadata 503")
++            e = market.edge.isoformat()
++            return {"start": "2010-06-06T00:00:00Z", "end": e,
++                    "schema": {"ohlcv-1m": {"start": "2010-06-06T00:00:00Z", "end": e}}}
++
++    class _TS:
++        def get_range(self, *, start, end, **kw):
++            start, end = pd.Timestamp(start), pd.Timestamp(end)
++            market.hist_calls.append((start, end))
++            if end > market.edge:   # mirrors Databento's 422 data_end_after_available_end
++                raise RuntimeError(f"422 end {end} after available end {market.edge}")
++            idx = pd.date_range(start.ceil("min"), end, freq="1min", inclusive="left",
++                                tz="UTC", name="ts_event")
++            px = [bar_price(t) for t in idx]
++            df = pd.DataFrame({"rtype": 33, "publisher_id": 1, "instrument_id": 42,
++                               "open": px, "high": [p + 1 for p in px],
++                               "low": [p - 1 for p in px], "close": [p + 0.5 for p in px],
++                               "volume": 10, "symbol": "MYM.v.0"}, index=idx)
++            return _Store(df)
++
++    class Historical:
++        def __init__(self, key=None):
++            self.metadata, self.timeseries = _Meta(), _TS()
++
++    return Historical
++
++
++def make_live(market):
++    class Live:
++        def __init__(self, key=None, **kw):
++            self.cb = self.exc_cb = None
++            self.start_ts = None
++            self.connected = False
++            self.stopped = self.closed = False
++            market.live_sessions.append(self)
++
++        def add_callback(self, cb, exception_callback=None):
++            self.cb, self.exc_cb = cb, exception_callback
++
++        def subscribe(self, *, dataset, schema, stype_in, symbols, start=None):
++            self.sub = dict(dataset=dataset, schema=schema, stype_in=stype_in, symbols=symbols)
++            self.start_ts = pd.Timestamp(start)
++            self.connected = True
++
++        def is_connected(self):
++            return self.connected
++
++        def _emit(self, rec):
++            try:
++                self.cb(rec)
++            except Exception as e:                      # mirrors ClientRecordCallback
++                if self.exc_cb:
++                    self.exc_cb(e)
++
++        def _run(self):
++            mode = market.live_mode
++            if mode == "error":
++                self._emit(db.ErrorMsg(ts_event=0, err="Invalid start", code=db.ErrorCode.INVALID_SUBSCRIPTION))
++                self.connected = False
++                return
++            last_closed = market.now.floor("min") - pd.Timedelta(minutes=1)
++            for ts in pd.date_range(self.start_ts.ceil("min"), last_closed, freq="1min"):
++                self._emit(ohlcv(ts, market.live_bump))
++            if mode == "disconnect":
++                self.connected = False
++                return
++            if mode == "hang":
++                return
++            self._emit(db.SystemMsg(ts_event=0, msg="Finished replay",
++                                    code=db.SystemCode.REPLAY_COMPLETED))
++
++        def start(self):
++            threading.Thread(target=self._run, daemon=True).start()
++
++        def stop(self):
++            self.stopped = True
++            self.connected = False
++
++        def block_for_close(self, timeout=None):
++            self.closed = True
++
++        def terminate(self):
++            self.closed = True
++
++    return Live
++
++
++@pytest.fixture
++def market(monkeypatch):
++    import data_feed
++    m = FakeMarket()
++    monkeypatch.setattr(data_feed.db, "Historical", make_historical(m))
++    monkeypatch.setattr(data_feed.db, "Live", make_live(m))
++    return m
+diff --git a/test/test_data_feed.py b/test/test_data_feed.py
+new file mode 100644
+index 0000000..9800f85
+--- /dev/null
++++ b/test/test_data_feed.py
+@@ -0,0 +1,171 @@
++"""Bug #1 — signals ran on 1m bars ending at now - DATA_LAG (3h).
++
++The first three tests reproduce the production failure: they fail on the
++pre-fix data_feed.py (no Live replay on the cache_path=None path) and pass
++after it.
++"""
++import pandas as pd
++import pytest
++
++import config
++import data_feed
++from conftest import bar_price
++
++ONE_MIN = pd.Timedelta(minutes=1)
++
++
++# ── Reproduces the production bug ──────────────────────────────────────────
++def test_last_bar_is_last_closed_minute(market):
++    df_1m, *_ = data_feed.load_all_timeframes(days=1)
++    assert df_1m.index[-1] == market.now.floor("min") - ONE_MIN, (
++        f"last 1m bar {df_1m.index[-1]} lags now {market.now} — stale data")
++
++
++def test_live_replay_runs_on_production_path(market):
++    """signals.py calls load_all_timeframes() with cache_path=None."""
++    data_feed.load_all_timeframes(days=1)
++    assert len(market.live_sessions) == 1
++
++
++def test_replay_failure_fails_closed(market):
++    market.live_mode = "error"
++    with pytest.raises(data_feed.DataFeedError, match="Invalid start"):
++        data_feed.load_all_timeframes(days=1)
++
++
++# ── Stitch correctness ─────────────────────────────────────────────────────
++def test_seam_is_contiguous_without_duplicates(market):
++    df_1m, *_ = data_feed.load_all_timeframes(days=1)
++    tail = df_1m[df_1m.index >= market.edge - pd.Timedelta(hours=2)]
++    assert tail.index.is_unique
++    assert (tail.index.to_series().diff().dropna() == ONE_MIN).all()
++
++
++def test_historical_wins_on_overlap(market):
++    market.live_bump = 0.25                     # make the two sources distinguishable
++    df_1m, *_ = data_feed.load_all_timeframes(days=1)
++    edge = market.edge.floor("min")
++    overlap = df_1m[(df_1m.index >= edge - config.LIVE_REPLAY_OVERLAP) & (df_1m.index < edge)]
++    assert len(overlap) == config.LIVE_REPLAY_OVERLAP // ONE_MIN
++    assert all(row.open == bar_price(ts) for ts, row in overlap.iterrows())
++    after = df_1m[df_1m.index >= edge]
++    assert all(row.open == bar_price(ts) + 0.25 for ts, row in after.iterrows())
++
++
++def test_live_fixed_point_prices_are_scaled_exactly(market):
++    df = data_feed.pull_via_live_replay(market.now - pd.Timedelta(minutes=10), now=market.now)
++    ts = df.index[-1]
++    assert df.loc[ts, "open"] == bar_price(ts)
++    assert df.loc[ts, "close"] == bar_price(ts) + 0.5
++    assert str(df.index.tz) == "UTC" and df.index.name == "datetime"
++
++
++def test_replay_subscription_matches_config(market):
++    data_feed.load_all_timeframes(days=1)
++    s = market.live_sessions[0]
++    assert s.sub == dict(dataset=config.DATASET, schema=config.SCHEMA,
++                         stype_in=config.STYPE_IN, symbols=[config.SYMBOL])
++    assert s.start_ts == market.edge.floor("min") - config.LIVE_REPLAY_OVERLAP
++
++
++def test_resampled_frames_include_live_bars(market):
++    df_1m, df_5m, df_15m, df_1h = data_feed.load_all_timeframes(days=1)
++    for f in (df_5m, df_15m, df_1h):
++        assert f["close"].iloc[-1] == df_1m["close"].iloc[-1]   # last bin carries live bars
++
++
++# ── Historical edge ────────────────────────────────────────────────────────
++def test_historical_end_is_published_edge_floored(market):
++    assert data_feed._historical_end(market.now) == market.edge.floor("min")
++
++
++def test_historical_end_never_exceeds_now(market):
++    market.hist_lag = pd.Timedelta(minutes=-5)       # clock skew: edge in the "future"
++    assert data_feed._historical_end(market.now) == market.now.floor("min")
++
++
++def test_metadata_failure_falls_back_to_data_lag_and_still_stitches(market):
++    market.metadata_raises = True
++    market.hist_lag = config.DATA_LAG - ONE_MIN      # Historical edge just inside the fallback
++    df_1m, *_ = data_feed.load_all_timeframes(days=1)
++    hist_end = market.hist_calls[-1][1]
++    assert hist_end <= market.now - config.DATA_LAG + ONE_MIN
++    assert hist_end == hist_end.floor("min")
++    assert df_1m.index[-1] == market.now.floor("min") - ONE_MIN
++
++
++# ── Replay failure modes (all fail closed, all close the session) ──────────
++def test_replay_timeout(market):
++    market.live_mode = "hang"
++    with pytest.raises(data_feed.ReplayTimeout):
++        data_feed.pull_via_live_replay(market.now - pd.Timedelta(minutes=5),
++                                       timeout=0.5, now=market.now)
++    assert market.live_sessions[-1].stopped
++
++
++def test_replay_timeout_is_still_a_timeouterror(market):
++    """Notebook callers catch TimeoutError — keep that contract."""
++    market.live_mode = "hang"
++    with pytest.raises(TimeoutError):
++        data_feed.pull_via_live_replay(market.now - pd.Timedelta(minutes=5),
++                                       timeout=0.3, now=market.now)
++
++
++def test_disconnect_before_replay_completed(market):
++    market.live_mode = "disconnect"
++    with pytest.raises(data_feed.DataFeedError, match="closed before REPLAY_COMPLETED"):
++        data_feed.pull_via_live_replay(market.now - pd.Timedelta(minutes=5),
++                                       timeout=5, now=market.now)
++
++
++def test_gateway_error_returns_immediately_not_at_timeout(market):
++    import time
++    market.live_mode = "error"
++    t0 = time.monotonic()
++    with pytest.raises(data_feed.DataFeedError):
++        data_feed.pull_via_live_replay(market.now - pd.Timedelta(minutes=5),
++                                       timeout=20, now=market.now)
++    assert time.monotonic() - t0 < 2
++    assert market.live_sessions[-1].stopped
++
++
++def test_replay_start_beyond_24h_window_never_connects(market):
++    with pytest.raises(data_feed.DataFeedError, match="intraday-replay window"):
++        data_feed.pull_via_live_replay(market.now - pd.Timedelta(hours=24), now=market.now)
++    assert market.live_sessions == []
++
++
++def test_stale_historical_edge_fails_closed(market):
++    market.hist_lag = pd.Timedelta(hours=30)      # Historical outage
++    with pytest.raises(data_feed.DataFeedError):
++        data_feed.load_all_timeframes(days=2)
++
++
++def test_subscribe_exception_is_wrapped_and_session_closed(market, monkeypatch):
++    def boom(self, **kw):
++        raise ConnectionError("auth timed out")
++    monkeypatch.setattr(data_feed.db.Live, "subscribe", boom)
++    with pytest.raises(data_feed.DataFeedError, match="auth timed out"):
++        data_feed.pull_via_live_replay(market.now - pd.Timedelta(minutes=5), now=market.now)
++    assert market.live_sessions[-1].stopped
++
++
++def test_empty_replay_is_valid(market):
++    """Halt / maintenance break: replay completes with zero bars."""
++    df = data_feed.pull_via_live_replay(market.now.floor("min"), now=market.now)
++    assert df.empty and str(df.index.tz) == "UTC"
++
++
++# ── Research path ──────────────────────────────────────────────────────────
++def test_live_fill_false_is_historical_only(market):
++    df_1m, *_ = data_feed.load_all_timeframes(days=1, live_fill=False)
++    assert market.live_sessions == []
++    assert df_1m.index[-1] < market.edge
++
++
++def test_cache_path_incremental_stitch(market, tmp_path):
++    cache = tmp_path / "cache.csv"
++    data_feed.load_all_timeframes(days=1, cache_path=str(cache))
++    df_1m, *_ = data_feed.load_all_timeframes(days=1, cache_path=str(cache))
++    assert df_1m.index.is_unique
++    assert df_1m.index[-1] == market.now.floor("min") - ONE_MIN
+diff --git a/test/test_signals_runtime.py b/test/test_signals_runtime.py
+new file mode 100644
+index 0000000..fd44681
+--- /dev/null
++++ b/test/test_signals_runtime.py
+@@ -0,0 +1,89 @@
++"""Bug #2 (DST-safe Render cron) and the signals-level fail-closed contract
++for bug #1."""
++import pandas as pd
++import pytest
++import pytz
++
++import config
++import signals
++
++UTC = pytz.UTC
++CRON_HOURS_UTC = range(12, 21)          # Render schedule: */4 12-20 * * 1-5
++CRON_MINUTES = range(0, 60, 4)
++
++
++def _utc(s):
++    return pd.Timestamp(s, tz="UTC").to_pydatetime()
++
++
++# ── in_run_window on both sides of the 2026-11-01 DST change ───────────────
++@pytest.mark.parametrize("utc, expected", [
++    # EDT (Fri 2026-10-30, UTC-4)
++    ("2026-10-30 11:56", False),   # 07:56 EDT
++    ("2026-10-30 12:00", True),    # 08:00 EDT
++    ("2026-10-30 19:56", True),    # 15:56 EDT
++    ("2026-10-30 20:00", False),   # 16:00 EDT
++    # EST (Mon 2026-11-02, UTC-5)
++    ("2026-11-02 12:56", False),   # 07:56 EST
++    ("2026-11-02 13:00", True),    # 08:00 EST
++    ("2026-11-02 20:56", True),    # 15:56 EST
++    ("2026-11-02 21:00", False),   # 16:00 EST
++    # weekend
++    ("2026-10-31 15:00", False),   # Sat 11:00 EDT
++    ("2026-11-01 15:00", False),   # Sun 10:00 EST
++])
++def test_in_run_window(utc, expected):
++    ok, now_et = signals.in_run_window(_utc(utc))
++    assert ok is expected, now_et
++
++
++def _slots_admitted(day):
++    """ET times of cron firings on `day` (UTC date) that pass the gate."""
++    out = []
++    for h in CRON_HOURS_UTC:
++        for m in CRON_MINUTES:
++            ok, now_et = signals.in_run_window(_utc(f"{day} {h:02d}:{m:02d}"))
++            if ok:
++                out.append(now_et.strftime("%H:%M"))
++    return out
++
++
++EXPECTED_ET_SLOTS = [f"{h:02d}:{m:02d}" for h in range(8, 16) for m in CRON_MINUTES]
++
++
++@pytest.mark.parametrize("day", pd.bdate_range("2026-03-02", "2026-03-13").strftime("%Y-%m-%d").tolist()
++                         + pd.bdate_range("2026-10-26", "2026-11-06").strftime("%Y-%m-%d").tolist())
++def test_cron_plus_gate_covers_window_exactly_across_dst(day):
++    """Every weekday around both 2026 DST changes gets all 120 runs
++    08:00-15:56 ET — no gaps, no runs outside the window."""
++    assert _slots_admitted(day) == EXPECTED_ET_SLOTS
++
++
++def test_outside_window_exits_before_any_data_pull(monkeypatch):
++    called = []
++    monkeypatch.setattr(signals, "in_run_window", lambda now=None: (False, pd.Timestamp("2026-11-02 07:56", tz="US/Eastern")))
++    monkeypatch.setattr(signals, "load_from_databento", lambda: called.append(1))
++    signals.run_signal_check()
++    assert called == []
++
++
++# ── Bug #1 at the signals layer: replay failure => no orders ───────────────
++def test_replay_failure_sends_nothing(market, monkeypatch):
++    market.live_mode = "error"
++    monkeypatch.setattr(signals, "in_run_window", lambda now=None: (True, None))
++    sent = []
++    monkeypatch.setattr(signals, "send_alert", lambda *a, **k: sent.append(a))
++    logged = []
++    monkeypatch.setattr(signals, "log", logged.append)
++    signals.run_signal_check()
++    assert sent == []
++    assert any(m.startswith("Data load failed") for m in logged)
++
++
++def test_production_call_site_returns_live_edge(market, monkeypatch):
++    """signals.load_from_databento() — the exact call Render makes, default
++    args (DATA_DAYS, cache_path=None) — yields bars to the last closed minute."""
++    monkeypatch.setattr(signals, "log", lambda m: None)
++    df_1m, df_5m, df_15m, df_1h = signals.load_from_databento()
++    assert df_1m.index[-1] == market.now.floor("min") - pd.Timedelta(minutes=1)
++    assert df_1m.index[0] >= market.now - pd.Timedelta(days=config.DATA_DAYS)
+-- 
+2.43.0
+
