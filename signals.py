@@ -320,9 +320,9 @@ def calculate_sets(zone, all_zones, account_size=config.ACCOUNT_SIZE,
     if raw_target is None: return None
     raw_target_pts = abs(raw_target - entry)
     rr_raw = round(raw_target_pts / stop_points, 2)
-    if rr_raw < 0.5:
+    if rr_raw < 0.99:
         return None
-    elif rr_raw <= 1.1:
+    elif rr_raw <= 1.3:
         t1 = raw_target 
         t2 = None
         t1_points = raw_target_pts
@@ -331,8 +331,8 @@ def calculate_sets(zone, all_zones, account_size=config.ACCOUNT_SIZE,
         rr_t2 = None
         contracts_t1 = contracts 
         contracts_t2 = None
-    elif rr_raw <= 2.0:
-        t1 = round(entry + direction * stop_points * 1.0, 1)
+    elif rr_raw <= 1.75:
+        t1 = round(entry + direction * stop_points * 1.5, 1)
         cap_price = round(entry + direction * stop_points * t2_cap, 1)
         t2 = round(min(raw_target, cap_price), 1) if direction == 1 else round(max(raw_target, cap_price), 1)
         t1_points = round(abs(t1 - entry), 1)
@@ -342,7 +342,7 @@ def calculate_sets(zone, all_zones, account_size=config.ACCOUNT_SIZE,
         contracts_t1 = max(1, contracts // 2)
         contracts_t2 = contracts - contracts_t1
     else:
-        t1 = round(entry + direction * stop_points * 1.5, 1)
+        t1 = round(entry + direction * stop_points * 1.8, 1)
         cap_price = round(entry + direction * stop_points * t2_cap, 1)
         t2 = round(min(raw_target, cap_price), 1) if direction == 1 else round(max(raw_target, cap_price), 1)
         t1_points = round(abs(t1 - entry), 1)
