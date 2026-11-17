@@ -68,19 +68,19 @@ ACCOUNT_SIZE        = 50000
 RISK_PCT            = 0.005         # 0.5% per trade (v7 backtest value)
 TICK_VALUE          = 0.50          # MYM = $0.50/point (CME-verified; YM is $5)
 MIN_SCORE           = 5
-T2_CAP              = 2.5           # R:R cap on T2
-MAX_BODY_PCT        = 40            # base candle: body <= 40% of range
-MIN_BODY_PCT        = 42            # leg candle:  body >= 50% of range
+T2_CAP              = 5           # R:R cap on T2
+MAX_BODY_PCT        = 35            # base candle: body <= 40% of range
+MIN_BODY_PCT        = 43            # leg candle:  body >= 50% of range
 MIN_RANGE_RATIO     = 0.631         # leg range >= base_height * this
-RANGE_MULTIPLIER    = 1.01          # base range <= rolling-median * this
+RANGE_MULTIPLIER    = 0.36         # base range <= rolling-median * this
 MIN_ZONE_HEIGHT     = 13            # pts
 MAX_BASE_CANDLES    = 9
 STOP_BUFFER         = 8             # static fallback; live run computes dynamically
 ENTRY_SIGMA         = 1.88            # proximity band = this many std devs of bar range
 ENTRY_SIGMA_WINDOW  = 20            # rolling window (bars) for the range std
-DATA_DAYS           = 130           # days of 1m history pulled from Databento each run
+DATA_DAYS           = 150           # days of 1m history pulled from Databento each run
                                      # (>= TREND_WINDOW=120d so detect_zones's lookback is fully covered)
-MAX_TAPS            = 16   
+MAX_TAPS            = 10   
 TEST_MODE           = False # reject a zone once it has been tapped this many times
 # min_zone_height calc that goes just before detect_zones
 ZONE_HEIGHT_K       = 0.38
@@ -104,7 +104,7 @@ ZONE_WINDOW_DAYS    = 120       # detect_zones: prev 120 candles (last 10hrs) of
 #   EST (UTC-5): 12:00-20:56 UTC = 07:00-15:56 ET
 # Each run checks the ET wall clock against the window below and exits
 # BEFORE any data pull when outside it. DST changes need no redeploy.
-RUN_WINDOW_START = "08:00"           # ET, inclusive
+RUN_WINDOW_START = "07:00"           # ET, inclusive
 RUN_WINDOW_END   = "16:00"           # ET, exclusive
 RUN_DAYS         = (0, 1, 2, 3, 4)   # Mon-Fri (datetime.weekday())
 TIMEZONE         = "US/Eastern"      # DST-aware (pytz)
